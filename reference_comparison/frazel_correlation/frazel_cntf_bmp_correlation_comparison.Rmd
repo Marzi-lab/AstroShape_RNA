@@ -1,0 +1,805 @@
+---
+title: "Mouse scRNA-seq CNTF/BMP4 astrocyte reference comparison"
+author: "Paulina"
+date: "2024-06-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat) # Note: seurat v5 installed to VM
+library(SeuratDisk)
+# library(biomaRt)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(Matrix)
+library(ComplexHeatmap)
+library(purrr)
+library(magrittr)
+library(ggrepel)
+library(stringr)
+library(corrplot)
+library(RColorBrewer)
+library(ggVennDiagram)
+library(DESeq2)
+library(MuDataSeurat)
+library(anndata)
+library(rhdf5)
+library(anndataR)
+library(zellkonverter)
+
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(enrichplot)
+library(ggplot2)
+library(ggpubr)
+
+library(BPCells) # remotes::install_github("bnprks/BPCells")
+library(Seurat) 
+library(SeuratObject)
+library(SeuratDisk)
+library(Azimuth)
+
+# set working directory
+setwd("/home/pu1918/RDS/user/pu1918/")
+workdir="/home/pu1918/RDS/user/pu1918/ephemeral/AS_astrocytes"
+dir="/home/pu1918/RDS/user/pu1918/ephemeral/AS_astrocytes_v2"
+
+# set seed
+set.seed(123)
+```
+
+
+Comparing differentiated astrocytes with published mouse astrocyte organoid gene expression in Frazel et al. 2023.
+scRNA-seq raw counts available at https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE211140. Also shared by author directly.
+
+Description of data files:
+(1) 6 raw feature-barcode counts matrices (h5 files), 3 for CNTF and BMP4, one for each time point (5,7,9 days).
+(2) Preprocessed counts seurat object (h5seurat file) for all samples, and (likely) top variable genes.
+
+The study reported that S100a6 and Fabp7 were their markers for CNTF and BMP4/FGF1 astrocytes, respectively.
+
+
+# Processed data visualization
+
+## Load processed data
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=4.5, fig.height=4}
+diffs <- LoadH5Seurat(paste0(workdir, "/ref_frazel/diffs.h5seurat"), misc=F)
+diffs
+dim(diffs)
+```
+
+## Plot UMAP
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=4.5, fig.height=4}
+DimPlot(diffs, reduction="umap", group.by="batch")
+FeaturePlot(diffs,  reduction="umap", features= "S100a6")
+FeaturePlot(diffs,  reduction="umap", features= "Fabp7")
+# FeaturePlot(subset(diffs, subset = batch %in% c("BMP_5day","BMP_7day","BMP_9day")),  reduction="umap", features= "Cntfr",pt.size=0.6)
+# FeaturePlot(subset(diffs, subset = batch %in% c("CNTF_5day","CNTF_7day","CNTF_9day")),  reduction="umap", features= "Cntfr", pt.size=0.6)
+```
+## Violin plot of expression counts
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=6.5, fig.height=4}
+VlnPlot(diffs, group.by="batch", features = c("S100a6", "Fabp7"))
+```
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=6.5, fig.height=3.5}
+VlnPlot(diffs, group.by="batch", features = c("Gja-1", "Slc1a3"))
+```
+
+## Perform differential analysis
+Notice the counts == data, so values appear normalised, while DESeq2 requires unnormalized counts.
+``` {r}
+# Get list of comparisons
+time <- c(5, 7, 9)
+comparisons <- map(time, ~list(BMP = paste("BMP_", .x, "day", sep = ""), CNTF = paste("CNTF_",
+    .x, "day", sep = ""))) %>%
+    setNames(time)
+Idents(object = diffs) <- "batch"
+
+# # Perform DGE analysis using DESeq2
+# results <- map(comparisons, ~FindMarkers(diffs, 
+#                                          slot = "counts",
+#                                          only.pos = FALSE, ident.1 = .x$CNTF,
+#     ident.2 = .x$BMP4, min.pct = 0.1, logfc.threshold = 0.1, test.use = "DESeq2"))
+
+# Perform DGE analysis using wilcox (due to normalised data)
+results <- map(comparisons, ~FindMarkers(diffs, 
+                                         slot = "counts",
+                                         only.pos = FALSE, 
+                                         ident.1 = .x$CNTF,
+                                         ident.2 = .x$BMP4, 
+                                         min.pct = 0.1, logfc.threshold = 0.1, test.use = "wilcox"))
+```
+
+View top results for each time point
+``` {r}
+head(results$`5`)
+head(results$`7`)
+head(results$`9`)
+# S100a6 upregulated with avg_log2FC 1.432035, p_val 0, day 9.
+```
+
+## Map to human genes
+``` {r}
+# Map human genes
+dgeSC <- results
+dgeSC %<>%
+    map(~.x %>%
+        mutate(symbol = rownames(.), signif = p_val_adj <= 0.05) %>%
+        arrange(desc(abs(avg_log2FC))))
+# saveRDS(dgeSC, paste0(workdir,"/ref_frazel/bmp_cntf_degs_alltimepoints.rds"))
+
+# List all unique genes from all comparisons
+geneList <- map(dgeSC, ~.x$symbol) %>%
+    unlist() %>%
+    unique()
+
+human <- useMart(biomart = "ensembl", host = "https://dec2021.archive.ensembl.org") %>%
+    useDataset(dataset = "hsapiens_gene_ensembl")
+mouse <- useMart(biomart = "ensembl", host = "https://dec2021.archive.ensembl.org") %>%
+    useDataset(dataset = "mmusculus_gene_ensembl")
+var.genes.mouse2human <- getLDS(attributes = c("ensembl_gene_id", "external_gene_name"),
+    filters = "external_gene_name", values = geneList, mart = mouse, attributesL = c("ensembl_gene_id",
+        "external_gene_name"), martL = human) %>%
+    arrange(Gene.name.1, Gene.name) %>%
+    distinct(Gene.stable.ID.1, .keep_all = TRUE) %>%
+    distinct(Gene.stable.ID, .keep_all = TRUE)
+
+# Include Human gene symbol for all DGE
+dgeSC %<>%
+    map(~.x %>%
+        left_join(var.genes.mouse2human, by = c(symbol = "Gene.name")) %>%
+        filter(!is.na(Gene.name.1)) %>%
+        mutate(symbol.hs = Gene.name.1))
+# saveRDS(dgeSC, paste0(workdir,"/ref_frazel/bmp_cntf_degs_alltimepoints_hs.rds"))
+```
+
+Check top rows
+``` {r}
+head(dgeSC$`5`,10)
+head(dgeSC$`7`,10)
+head(dgeSC$`9`,10)
+# Fabp7 downregulated in comparison, so upregulated in BMP4, avg_log2FC -4.503163, p_val 0, day 9.
+```
+Save
+``` {r}
+dgeSCbind = bind_rows(dgeSC, .id = "time")
+write.csv(dgeSCbind, paste0(workdir,"/ref_frazel/frazel_mouse_astrocyte_markers_wilcox.csv"))
+```
+
+
+## Load human differentiated DEGs
+```{r}
+# load differentiated BMP4 and CNTF marker genes
+res.file <- paste0(workdir, "/analysed_data/differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+# Replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+    setNames(nm = dge_res_sheets$sheets)
+dgeBulk_sel <- dgeBulk[[c("CNTF_diff_3w - BMP4_diff_3w|untreated")]]
+```
+
+## Check S100a6 and Fabp7 marker genes
+``` {r}
+genes = c("S100A6","FABP7")
+dgeBulk_sel[dgeBulk_sel$symbol %in% genes,]
+# slight upregulation in CNTF relative to BMP4 in both genes, but not significant
+```
+## Subset to top significant differentially expressed genes in differentiated astrocyte
+``` {r}
+
+# set time t, options: 5,7,9
+t = 9
+
+# select significant genes for reference dataset in timepoint
+dgeSCtime <- dgeSCbind %>%
+  dplyr::filter(p_val_adj <= 0.05) %>%
+  dplyr::filter(time == t) %>%
+  # group_by(lineagemarker) %>%
+  # arrange(desc(avg_log2FC)) %>% 
+  arrange(desc(abs(avg_log2FC))) %>% 
+  ungroup()
+
+# select significant DEGs in bulk
+dgeBulk_sel = dgeBulk_sel[dgeBulk_sel$pvalue <= 0.05,]
+
+# find common genes 
+scgenes = dgeSCtime$symbol.hs %>% unique()
+bgenes = dgeBulk_sel$symbol %>% unique()
+length(scgenes) #  N=335, 308, 305
+length(bgenes) # 4497
+common = intersect(scgenes, bgenes) 
+length(common) #  N=112, 108, 305
+
+# subset dataframes
+bulkRNA = dgeBulk_sel[dgeBulk_sel$symbol %in% common,]
+dgeSCtime = dgeSCtime[dgeSCtime$symbol.hs %in% common,]
+nrow(bulkRNA) # 112, 108, 98
+nrow(dgeSCtime) # 112, 108, 98
+
+# merge by gene
+de_merge = merge(bulkRNA, dgeSCtime, by.x="symbol", by.y="symbol.hs")
+```
+
+Save
+``` {r}
+# write.csv(de_merge, paste0(workdir,"/ref_frazel/frazel_common_degs_day5.csv"))
+# write.csv(de_merge, paste0(workdir,"/ref_frazel/frazel_common_degs_day7.csv"))
+# write.csv(de_merge, paste0(workdir,"/ref_frazel/frazel_common_degs_day9.csv"))
+```
+
+Open and combine times
+``` {r}
+file_l <- list.files(paste0(workdir,"/ref_frazel/"), pattern="frazel_common_degs")
+df = data.frame()
+for (file in file_l) {
+  data = read.csv( paste0(workdir,"/ref_frazel/", file), row.names = 1)
+  df = rbind(df, data)
+}
+```
+
+Plot 
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=10, fig.height=4}
+ggscatter(df, x = "log2FoldChange", y = "avg_log2FC", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "human astrocyte logFC", ylab = "mouse reference logFC",
+          # label = "symbol",
+          # label.select = corrgenes$symbol.y,
+          repel= T,
+          facet.by = "time")
+```
+Save plot
+``` {r}
+# Open a svg file
+svglite(paste0(workdir,"/ref_frazel/scatterplot_deg_effect_correlation.svg"), width = 10, height = 10)
+ggscatter(de_merge, x = "log2FoldChange", y = "avg_log2FC", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "human astrocyte logFC", ylab = "mouse reference logFC",
+          label = "symbol",
+          # label.select = corrgenes$symbol.y,
+          repel= TRUE)
+          # ,facet.by = "Time")
+# Close the svg file
+dev.off()
+```
+
+
+
+
+# Find differential genes using DESeq2
+## Load raw counts
+```{r}
+# Load data
+inputs.dir=paste0(workdir,"/ref_frazel")
+countFiles <- list.files(path=inputs.dir, pattern = ".*h5$")
+sAll <- map(countFiles, ~Read10X_h5(file.path(inputs.dir, .x))) %>%
+    map(~CreateSeuratObject(.x[["Gene Expression"]])) %>%
+    map2(c("BMP_5day", "BMP_7day", "BMP_9day", "CNTF_5day", "CNTF_7day", "CNTF_9day"),
+        function(x, y) {
+            x$batch = y
+            return(x)
+        })
+
+# Merged Seurat object
+sMerged <- merge(sAll[[1]], y = sAll[2:6], suffixes = paste0("-", c(0:5)))
+test <- data.frame(cells = gsub("(.*)-1_(\\d)", "\\1-\\2", colnames(sMerged))) %>%
+    separate(cells, into = c("cells", "batch"), sep = "-") %>%
+    mutate(batch = as.numeric(batch) - 1) %>%
+    mutate(cells = paste(cells, batch, sep = "-"))
+
+sMerged <- RenameCells(sMerged, new.names = test$cells)
+sMerged@meta.data$barcode <- colnames(sMerged)
+sMerged <- subset(sMerged, subset = barcode %in% colnames(diffs))
+# join layers (seurat v5)
+sMerged <- JoinLayers(sMerged)
+sMerged %<>%
+    NormalizeData(normalization.method = "LogNormalize", scale.factor = 10000) %>%
+    FindVariableFeatures(selection.method = "vst", nfeatures = 2000) %>%
+    ScaleData()
+# saveRDS(sMerged, file.path(inputs.dir, "sMerged_counts_sObj.rds"))
+
+# Set batch as ident
+Idents(sMerged) <- "batch"
+
+# Get list of comparisons
+time <- c(5, 7, 9)
+comparisons <- map(time, ~list(BMP = paste("BMP_", .x, "day", sep = ""), CNTF = paste("CNTF_",
+    .x, "day", sep = ""))) %>%
+    setNames(time)
+
+# drop large object 
+sAll <- NULL
+```
+Save
+```{r}
+saveRDS(sMerged, paste0(workdir,"/ref_frazel/merged_raw_counts.rds"))
+```
+
+
+# get cell count per dataset
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=3, fig.height=1.5}
+sMerged <- SetIdent(sMerged, value = "batch")
+# count cells per cluster
+cellcount <- data.frame(table(Idents(sMerged)))
+ggplot(cellcount, aes(x=Var1, y=Freq)) + geom_bar( stat="identity") + 
+  theme_bw() + ylab("Cell counts") + xlab("Cluster")
+```
+
+## Run differential analysis in CNTF vs BMP4 mouse astrocytes
+``` {r}
+sMerged[["RNA"]]$counts<-as.matrix(sMerged[["RNA"]]$counts)+1
+
+# Perform DGE analysis using DESeq2
+varfeatures = VariableFeatures(sMerged)
+results <- map(comparisons, ~FindMarkers(sMerged, only.pos = FALSE, ident.1 = .x$CNTF,
+    ident.2 = .x$BMP, min.pct = 0.1, logfc.threshold = 0.1, test.use = "DESeq2",
+    features = varfeatures, pseudocount.use = 1))
+``` 
+
+View top results for each time point
+``` {r}
+head(results$`5`)
+head(results$`7`)
+head(results$`9`)
+# S100a6 still upregulated in CNTF, avg_log2FC 5.082802, p_val 0, day 9. 
+```
+
+
+## Map human genes
+``` {r}
+# Map human genes
+dgeSC <- results
+dgeSC %<>%
+    map(~.x %>%
+        mutate(symbol = rownames(.), signif = p_val_adj <= 0.05) %>%
+        arrange(desc(abs(avg_log2FC))))
+# saveRDS(dgeSC, paste0(workdir,"/ref_frazel/bmp_cntf_degs_alltimepoints.rds"))
+
+# List all unique genes from all comparisons
+geneList <- map(dgeSC, ~.x$symbol) %>%
+    unlist() %>%
+    unique()
+
+human <- useMart(biomart = "ensembl", host = "https://dec2021.archive.ensembl.org") %>%
+    useDataset(dataset = "hsapiens_gene_ensembl")
+mouse <- useMart(biomart = "ensembl", host = "https://dec2021.archive.ensembl.org") %>%
+    useDataset(dataset = "mmusculus_gene_ensembl")
+var.genes.mouse2human <- getLDS(attributes = c("ensembl_gene_id", "external_gene_name"),
+    filters = "external_gene_name", values = geneList, mart = mouse, attributesL = c("ensembl_gene_id",
+        "external_gene_name"), martL = human) %>%
+    arrange(Gene.name.1, Gene.name) %>%
+    distinct(Gene.stable.ID.1, .keep_all = TRUE) %>%
+    distinct(Gene.stable.ID, .keep_all = TRUE)
+
+# Include Human gene symbol for all DGE
+dgeSC %<>%
+    map(~.x %>%
+        left_join(var.genes.mouse2human, by = c(symbol = "Gene.name")) %>%
+        filter(!is.na(Gene.name.1)) %>%
+        mutate(symbol.hs = Gene.name.1))
+# saveRDS(dgeSC, paste0(workdir,"/ref_frazel/bmp_cntf_degs_alltimepoints_hs.rds"))
+
+```
+
+Check top rows
+``` {r}
+head(dgeSC$`5`,10)
+head(dgeSC$`7`,10)
+head(dgeSC$`9`,10)
+
+dgeSC$`9`[dgeSC$`9`$symbol == "Fabp7",]
+# Fabp7 downregulated in comparison, so upregulated in BMP4, avg_log2FC -4.503163, p_val 0, day 9.
+```
+
+Save
+``` {r}
+dgeSCbind = bind_rows(dgeSC, .id = "time")
+write.csv(dgeSCbind, paste0(workdir,"/ref_frazel/frazel_mouse_astrocyte_markers_deseq2.csv"))
+```
+
+
+
+## Load human differentiated DEGs
+```{r}
+# load differentiated BMP4 and CNTF marker genes
+res.file <- paste0(workdir, "/analysed_data/differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+# Replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+    setNames(nm = dge_res_sheets$sheets)
+dgeBulk_sel <- dgeBulk[[c("CNTF_diff_3w - BMP4_diff_3w|untreated")]]
+```
+
+## Subset to top significant differentially expressed genes in differentiated astrocyte
+``` {r}
+
+# set time t, options: 5,7,9
+t = 9
+
+# select significant genes for reference dataset in timepoint
+dgeSCtime <- dgeSCbind %>%
+  dplyr::filter(p_val_adj <= 0.05) %>%
+  dplyr::filter(time == t) %>%
+  # group_by(lineagemarker) %>%
+  # arrange(desc(avg_log2FC)) %>% 
+  arrange(desc(abs(avg_log2FC))) %>% 
+  ungroup()
+
+# select significant DEGs in bulk
+dgeBulk_sel = dgeBulk_sel[dgeBulk_sel$pvalue <= 0.05,]
+
+# find common genes 
+scgenes = dgeSCtime$symbol.hs %>% unique()
+bgenes = dgeBulk_sel$symbol %>% unique()
+length(scgenes) #  N=894, 917, 919
+length(bgenes) # 4497
+common = intersect(scgenes, bgenes) 
+length(common) #  N=301, 302, 307
+
+# subset dataframes
+bulkRNA = dgeBulk_sel[dgeBulk_sel$symbol %in% common,]
+dgeSCtime = dgeSCtime[dgeSCtime$symbol.hs %in% common,]
+nrow(bulkRNA) # 301, 303, 308
+nrow(dgeSCtime) # 301, 302, 307
+
+# merge by gene
+de_merge = merge(bulkRNA, dgeSCtime, by.x="symbol", by.y="symbol.hs")
+```
+
+Save
+``` {r}
+# write.csv(de_merge, paste0(workdir,"/ref_frazel/frazel_common_degs_deseq2_day5.csv"))
+# write.csv(de_merge, paste0(workdir,"/ref_frazel/frazel_common_degs_deseq2_day7.csv"))
+# write.csv(de_merge, paste0(workdir,"/ref_frazel/frazel_common_degs_deseq2_day9.csv"))
+```
+
+Open and combine times
+``` {r}
+file_l <- list.files(paste0(workdir,"/ref_frazel/"), pattern="frazel_common_degs_deseq2")
+df = data.frame()
+for (file in file_l) {
+  data = read.csv( paste0(workdir,"/ref_frazel/", file), row.names = 1)
+  df = rbind(df, data)
+}
+```
+
+Plot 
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=10, fig.height=4}
+ggscatter(df, x = "log2FoldChange", y = "avg_log2FC", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "human astrocyte logFC", ylab = "mouse reference logFC",
+          label = "symbol",
+          # label.select = corrgenes$symbol.y,
+          repel= T,
+          facet.by = "time")
+```
+Repeat with limited set of top genes
+## Subset to top significant differentially expressed genes in differentiated astrocyte
+``` {r}
+
+# set time t, options: 5,7,9
+t = 9
+
+# select significant genes for reference dataset in timepoint
+dgeSCtime <- dgeSCbind %>%
+  dplyr::filter(p_val_adj <= 0.05) %>%
+  dplyr::filter(time == t) %>%
+  # group_by(lineagemarker) %>%
+  arrange(desc(abs(avg_log2FC))) %>% 
+  slice_head(n=100) %>%
+  ungroup()
+
+# select significant DEGs in bulk
+dgeBulk_sig = dgeBulk_sel %>% 
+  dplyr::filter(pvalue <= 0.05) %>%
+   arrange(desc(abs(log2FoldChange))) %>% 
+   slice_head(n=1000) %>%
+    ungroup()
+
+# find common genes 
+scgenes = dgeSCtime$symbol.hs %>% unique()
+bgenes = dgeBulk_sig$symbol %>% unique()
+length(scgenes) 
+length(bgenes) 
+common = intersect(scgenes, bgenes) 
+length(common) 
+
+# subset dataframes
+bulkRNA = dgeBulk_sig[dgeBulk_sig$symbol %in% common,]
+dgeSCtime = dgeSCtime[dgeSCtime$symbol.hs %in% common,]
+nrow(bulkRNA) 
+nrow(dgeSCtime) 
+
+# merge by gene
+de_merge = merge(bulkRNA, dgeSCtime, by.x="symbol", by.y="symbol.hs")
+```
+
+Save
+``` {r}
+# write.csv(de_merge, paste0(workdir,"/ref_frazel/frazel_common_degs_deseq2_top_day5.csv"))
+# write.csv(de_merge, paste0(workdir,"/ref_frazel/frazel_common_degs_deseq2_top_day7.csv"))
+# write.csv(de_merge, paste0(workdir,"/ref_frazel/frazel_common_degs_deseq2_top_day9.csv"))
+```
+
+Open and combine times
+``` {r}
+file_l <- list.files(paste0(workdir,"/ref_frazel/"), pattern="frazel_common_degs_deseq2_top")
+df = data.frame()
+for (file in file_l) {
+  data = read.csv( paste0(workdir,"/ref_frazel/", file), row.names = 1)
+  df = rbind(df, data)
+}
+```
+
+Plot 
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=10, fig.height=4}
+ggscatter(df, x = "log2FoldChange", y = "avg_log2FC", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "human astrocyte logFC", ylab = "mouse reference logFC",
+          label = "symbol",
+          # label.select = corrgenes$symbol.y,
+          repel= F,
+          facet.by = "time")
+```
+
+# Load pseudobulk
+```{r}
+# load counts
+counts <- read.csv(paste0(workdir, "/ref_frazel/frazel_all_timepoint_pseudobulk.csv"),row.names=1)
+# create colData
+colData = data.frame(sample=colnames(counts),
+                     factor=c( rep("bmp",3), rep("cntf",3) ),
+                    batch=rep(c(1:3),2))
+
+# Create DESeq2 object        
+dds <- DESeqDataSetFromMatrix(counts, 
+                                  colData = colData, 
+                                  design = ~ batch + factor)
+dds
+dds <- DESeq(dds)
+resultsNames(dds) # lists the coefficients
+res <- results(dds, name="factor_cntf_vs_bmp")
+# or to shrink log fold changes association with condition:
+res <- lfcShrink(dds, coef="factor_cntf_vs_bmp", type="apeglm")
+```
+Check results
+```{r}
+res_df <- data.frame(res)
+genes = c("Inhba","Gja1","Slc1a3","S100a6","Fabp7")
+res_df[genes,]
+```
+Save
+```{r}
+write.csv(res_df, paste0(workdir,"/ref_frazel/frazel_degs_deseq2_pseudobulk.csv"))
+```
+
+## Map human genes
+``` {r}
+# Map human genes
+res_df$gene <- rownames(res_df)
+dgeSC <- res_df
+dgeSC %<>%
+        mutate(symbol = rownames(.), signif = padj <= 0.05) %>%
+        arrange(desc(abs(log2FoldChange)))
+# saveRDS(dgeSC, paste0(workdir,"/ref_frazel/bmp_cntf_degs_alltimepoints.rds"))
+
+# List all unique genes from all comparisons
+geneList <- dgeSC$gene %>%
+    unlist() %>%
+    unique()
+
+human <- useMart(biomart = "ensembl", host = "https://dec2021.archive.ensembl.org") %>%
+    useDataset(dataset = "hsapiens_gene_ensembl")
+mouse <- useMart(biomart = "ensembl", host = "https://dec2021.archive.ensembl.org") %>%
+    useDataset(dataset = "mmusculus_gene_ensembl")
+var.genes.mouse2human <- getLDS(attributes = c("ensembl_gene_id", "external_gene_name"),
+    filters = "external_gene_name", values = geneList, mart = mouse, attributesL = c("ensembl_gene_id",
+        "external_gene_name"), martL = human) %>%
+    arrange(Gene.name.1, Gene.name) %>%
+    distinct(Gene.stable.ID.1, .keep_all = TRUE) %>%
+    distinct(Gene.stable.ID, .keep_all = TRUE)
+
+# Include Human gene symbol for all DGE
+dgeSC %<>%
+        left_join(var.genes.mouse2human, by = c(gene = "Gene.name")) %>%
+        filter(!is.na(Gene.name.1)) %>%
+        mutate(symbol.hs = Gene.name.1)
+# saveRDS(dgeSC, paste0(workdir,"/ref_frazel/bmp_cntf_degs_alltimepoints_hs.rds"))
+
+```
+
+Save
+```{r}
+write.csv(dgeSC, paste0(workdir,"/ref_frazel/frazel_degs_deseq2_pseudobulk.csv"))
+```
+
+Repeat with limited set of top genes
+## Subset to top significant differentially expressed genes in differentiated astrocyte
+``` {r}
+
+# select significant genes for reference dataset in timepoint
+dgeSCtime <- dgeSC %>%
+  dplyr::filter(padj <= 0.05) %>%
+  # dplyr::filter(time == t) %>%
+  # group_by(lineagemarker) %>%
+  arrange(desc(abs(log2FoldChange))) %>% 
+  slice_head(n=1000)
+
+# select significant DEGs in bulk
+dgeBulk_sig = dgeBulk_sel %>% 
+  dplyr::filter(pvalue <= 0.05) %>%
+   arrange(desc(abs(log2FoldChange))) %>% 
+   slice_head(n=1000) %>%
+    ungroup()
+
+# find common genes 
+scgenes = dgeSCtime$symbol.hs %>% unique()
+bgenes = dgeBulk_sig$symbol %>% unique()
+length(scgenes) 
+length(bgenes) 
+common = intersect(scgenes, bgenes) 
+length(common) 
+
+# subset dataframes
+bulkRNA = dgeBulk_sig[dgeBulk_sig$symbol %in% common,]
+dgeSCtime = dgeSCtime[dgeSCtime$symbol.hs %in% common,]
+nrow(bulkRNA) 
+nrow(dgeSCtime) 
+
+# merge by gene
+de_merge = merge(bulkRNA, dgeSCtime, by.x="symbol", by.y="symbol.hs")
+```
+
+Plot 
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=4, fig.height=4}
+ggscatter(de_merge, x = "log2FoldChange.x", y = "log2FoldChange.y", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "human astrocyte logFC", ylab = "mouse reference logFC",
+          label = "symbol",
+          # label.select = corrgenes$symbol.y,
+          repel= T)
+```
+Save
+```{r}
+library(svglite)
+svglite(paste0(workdir,"/ref_frazel/scatterplot_pseudobulk_deg_effect_correlation.svg"), width = 7, height = 7)
+
+ggscatter(de_merge, x = "log2FoldChange.x", y = "log2FoldChange.y", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "human astrocyte logFC", ylab = "mouse reference logFC",
+          label = "symbol",
+          # label.select = corrgenes$symbol.y,
+          repel= T)
+
+dev.off()
+```
+
+
+# Plot gene expression counts
+```{r}
+## load expression data 
+as_datadir=paste0(workdir,"/raw_data")
+bmp4_data <- read.table(paste0(as_datadir,"/BMP4_vst.txt"),sep="\t",header=T)
+# bmp4_data <- read.table(paste0(as_datadir,"/BMP4_norm.txt"),sep="\t",header=T)
+bmp4_metadata <- bmp4_data[c(2:11),-c(2:21)] # first set of rows, excluding PC columns
+bmp4_pc <- bmp4_data[-c(1:30), c(4:21)] # PC loadings by gene for each sample, selecting PC columns, excluding metadata and by sample PCs
+bmp4_exp <- bmp4_data[-c(1:30),-c(4:21)] 
+bmp4_exp_lng <- pivot_longer(bmp4_exp, cols=c(4:ncol(bmp4_exp)), names_to = "sample", values_to = "count")
+bmp4_exp_lng$group <- str_extract(bmp4_exp_lng$sample,"(progenitor|BMP4|CNTF)")
+bmp4_exp_lng <- bmp4_exp_lng[!(bmp4_exp_lng$group %in% "progenitor"),]
+
+## load expression data 
+cntf_data <- read.table(paste0(as_datadir,"/CNTF_vst.txt"),sep="\t",header=T)
+# cntf_data <- read.table(paste0(as_datadir,"/CNTF_norm.txt"),sep="\t",header=T)
+cntf_metadata <- cntf_data[c(2:11),-c(2:21)] # first set of rows, excluding PC columns
+cntf_pc <- cntf_data[-c(1:30), c(4:21)] # PC loadings by gene for each sample, selecting PC columns, excluding metadata and by sample PCs
+cntf_exp <- cntf_data[-c(1:30),-c(4:21)] 
+cntf_exp_lng <- pivot_longer(cntf_exp, cols=c(4:ncol(cntf_exp)), names_to = "sample", values_to = "count")
+cntf_exp_lng$group <- str_extract(cntf_exp_lng$sample,"(progenitor|BMP4|CNTF)")
+
+combined_exp <- rbind(bmp4_exp_lng, cntf_exp_lng)
+combined_exp$count <- as.numeric(combined_exp$count)
+combined_exp$group <- as.factor(combined_exp$group)
+combined_exp$symbol <- as.factor(combined_exp$symbol)
+
+```
+
+``` {r, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=5, fig.height=2.5}
+
+combined_exp$group <- factor(combined_exp$group, levels = c("progenitor", "BMP4", "CNTF"))
+
+### plot GJA1 and SLC1A3
+gene_list <- c("GJA1","SLC1A3")
+
+my_comparisons <- list( c("BMP4", "progenitor"), c("CNTF", "progenitor"), c("BMP4", "CNTF") )
+combined_exp_onegene <- combined_exp[combined_exp$symbol %in% gene_list[1],]
+p1 <- ggboxplot(combined_exp_onegene, x="group", y="count", fill="group",
+                outlier.shape = NA) + 
+  theme_bw() + facet_wrap(~symbol, scale="free") + geom_jitter(width = 0.1, height = 0.1) +
+  stat_compare_means(comparisons = my_comparisons, aes(group = group), label = "p.signif") +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+combined_exp_onegene <- combined_exp[combined_exp$symbol %in% gene_list[2],]
+p2 <- ggboxplot(combined_exp_onegene, x="group", y="count", fill="group",
+                outlier.shape = NA) + 
+  theme_bw() + facet_wrap(~symbol, scale="free") + geom_jitter(width = 0.1, height = 0.1) +
+  stat_compare_means(comparisons = my_comparisons, aes(group = group), label = "p.signif") +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+ggarrange(p1, p2, heights = c(4, 4), nrow = 1, ncol=2, align = "h")
+```
+
+
+``` {r, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=5, fig.height=2.5}
+
+combined_exp$group <- factor(combined_exp$group, levels = c("progenitor", "BMP4", "CNTF"))
+
+### plot INHBA and SLC1A3
+gene_list <- c("INHBA","SLC1A3")
+
+my_comparisons <- list( c("BMP4", "progenitor"), c("CNTF", "progenitor"), c("BMP4", "CNTF") )
+combined_exp_onegene <- combined_exp[combined_exp$symbol %in% gene_list[1],]
+p1 <- ggboxplot(combined_exp_onegene, x="group", y="count", fill="group",
+                outlier.shape = NA) + 
+  theme_bw() + facet_wrap(~symbol, scale="free") + geom_jitter(width = 0.1, height = 0.1) +
+  stat_compare_means(comparisons = my_comparisons, aes(group = group), label = "p.signif") +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+combined_exp_onegene <- combined_exp[combined_exp$symbol %in% gene_list[2],]
+p2 <- ggboxplot(combined_exp_onegene, x="group", y="count", fill="group",
+                outlier.shape = NA) + 
+  theme_bw() + facet_wrap(~symbol, scale="free") + geom_jitter(width = 0.1, height = 0.1) +
+  stat_compare_means(comparisons = my_comparisons, aes(group = group), label = "p.signif") +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+ggarrange(p1, p2, heights = c(4, 4), nrow = 1, ncol=2, align = "h")
+```
+
+``` {r, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=5, fig.height=2.5}
+
+combined_exp$group <- factor(combined_exp$group, levels = c("progenitor", "BMP4", "CNTF"))
+
+### plot S100A6 and FABP7
+gene_list <- c("S100A6","FABP7")
+
+my_comparisons <- list( c("BMP4", "progenitor"), c("CNTF", "progenitor"), c("BMP4", "CNTF") )
+combined_exp_onegene <- combined_exp[combined_exp$symbol %in% gene_list[1],]
+p1 <- ggboxplot(combined_exp_onegene, x="group", y="count", fill="group",
+                outlier.shape = NA) + 
+  theme_bw() + facet_wrap(~symbol, scale="free") + geom_jitter(width = 0.1, height = 0.1) +
+  stat_compare_means(comparisons = my_comparisons, aes(group = group), label = "p.signif") +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+combined_exp_onegene <- combined_exp[combined_exp$symbol %in% gene_list[2],]
+p2 <- ggboxplot(combined_exp_onegene, x="group", y="count", fill="group",
+                outlier.shape = NA) + 
+  theme_bw() + facet_wrap(~symbol, scale="free") + geom_jitter(width = 0.1, height = 0.1) +
+  stat_compare_means(comparisons = my_comparisons, aes(group = group), label = "p.signif") +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+ggarrange(p1, p2, heights = c(4, 4), nrow = 1, ncol=2, align = "h")
+```
+
+Save
+```{r}
+ggsave(file=paste0(workdir,"/ref_frazel/boxplot_s1006_fabp7_gene_expression.svg"), width=10, height=8)
+ggsave(file=paste0(workdir,"/ref_frazel/boxplot_s1006_fabp7_gene_expression.png"), width=10, height=6)
+```
+
+
+
