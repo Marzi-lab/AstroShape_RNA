@@ -1,0 +1,914 @@
+---
+title: "Comparing gene expression of BMP4/CNTF differentiated astrocytes with human reference cell types"
+author: "Paulina Urbanaviciute"
+date: "2024-04-03"
+output:
+  rmarkdown::html_document:
+    theme: default
+    highlight: tango
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    number_sections: no
+    self_contained: yes
+    df_print: paged
+---
+
+Load packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(DESeq2)
+library(ggpubr)
+library(BPCells) # remotes::install_github("bnprks/BPCells")
+library(Seurat) 
+library(SeuratObject)
+library(SeuratDisk)
+library(Azimuth) # remotes::install_github('satijalab/azimuth', ref = 'master')
+library(circlize)
+library(purrr)
+library(stringr)
+library(tidyr)
+library(ComplexHeatmap)
+```
+
+Set directories
+``` {r}
+workdir = "/home/pu1918/RDS/user/pu1918/ephemeral/AS_astrocytes"
+```
+
+Reference dataset (Siletti et al. 2023) can be downloaded from CELLXGENE (Human Brain Cell Atlas v1.0)
+``` {bash}
+# 3 Files: All neurons h5ad  (31G); All non-neurons h5ad (4.4G); Supercluster: Astrocyte (850M)
+# wget https://datasets.cellxgene.cziscience.com/b9171f05-8112-4a55-95f2-4cf8a57df8a2.h5ad
+# wget https://datasets.cellxgene.cziscience.com/cc9bfb86-96ed-4ecd-bcc9-464120fc8628.h5ad
+# wget https://datasets.cellxgene.cziscience.com/f86dbeff-36bf-4036-a828-c2c43b052cf2.rds
+```
+
+# Load external reference dataset
+```{r Function to format count assay}
+# ## function to be used when data assay contains raw counts. This replaces the
+# ## information into counts assay, and normalises counts for the data assay.
+# ## There's also an option to replace gene symbols as matrix rownames.
+# formatassay <- function(obj) {
+#   # extract data from seurat object
+#   assay <- obj[['RNA']]@data
+# 
+#   # gene information (rows)
+#   metafeature <- obj[['RNA']]@meta.features
+#   metafeature$ensembl_id <- row.names(metafeature)
+#   head(metafeature)
+# 
+#   # Option to switch ENSEMBL IDs to gene symbols
+#   #   # where gene names repeat in a column, and you want to add a unique number to the end of each gene name
+#   #   metafeature$Gene <- as.character(metafeature$Gene)
+#   #   metafeature$Gene <- ave(metafeature$Gene, metafeature$Gene, FUN = function(x) {
+#   #     if(length(x) > 1) {
+#   #       letters_combinations <- c(letters, sapply(letters, function(l1) paste0(letters, l1)))
+#   #       suffix <- letters_combinations[seq_along(x)]
+#   #       paste0(x, "_", suffix)
+#   #     } else {
+#   #       x
+#   #     }
+#   #   })
+#   #
+#   # rownames(metafeature) <- metafeature$Gene
+#   # rownames(assay) <- metafeature$Gene
+# 
+#   # cell information (columns)
+#   metadata <- obj@meta.data
+#   # dimensionality reductions
+#   red_umap <- obj$UMAP
+#   red_tsne <- obj$tSNE
+#   # create new object
+#   newobj <- CreateSeuratObject(counts = assay, meta.data = metadata)
+#   # stilobj[["RNA"]]@meta.features <- metafeature # ‘meta.features’ is not a slot in class “Assay5”
+#   newobj$UMAP <- red_umap
+#   newobj$tSNE <- red_tsne
+#   # normalize counts by cell (scale factor from total reads per cell)
+#   newobj <- NormalizeData(newobj)
+#   # rename
+#   obj <- newobj
+#   # check
+#   obj
+#   head(rownames(obj))
+#   # drop large unused objects
+#   newobj <- NULL
+#   assay <- NULL
+# 
+#   return(obj)
+# }
+```
+
+
+```{r Create reference RDS object}
+# ### Create reference object with ENSEMBL IDs as rownames
+# 
+# # open h5ad files using BPCells (for large files)
+# file.dir <- paste0(workdir, "/ref_siletti/")
+# files.set <- c("b9171f05-8112-4a55-95f2-4cf8a57df8a2.h5ad","cc9bfb86-96ed-4ecd-bcc9-464120fc8628.h5ad") # Non-neurons, Neurons
+# 
+# # Loop through (2) h5ad files and output BPCells matrices on-disk
+# data.list <- c()
+# metadata.list <- c()
+# for (i in 1:length(files.set)) {
+#   path <- paste0(file.dir, files.set[i])
+#   data <- BPCells::open_matrix_anndata_hdf5(path, group = "X")
+#    write_matrix_dir(
+#      mat = data,
+#      dir = paste0(gsub(".h5ad", "", path), "_BP")
+#    )
+#   # Load in BP matrices
+#   mat <- open_matrix_dir(dir = paste0(gsub(".h5ad", "", path), "_BP"))
+#   # Get metadata
+#   metadata.list[[i]] <- LoadH5ADobs(path = path)
+#   data.list[[i]] <- mat
+# }
+# # Name layers
+# names(data.list) <- c("nonneuron", "neuron")
+# 
+# # check metadata columns
+# colnames(metadata.list[[i]])
+# # Add Metadata
+# metadata.list <- lapply(metadata.list, function(x) {
+#   x <- x[, c("CellID", "cell_cycle_score", "cell_type", "cluster_id", "development_stage",
+#              "disease","donor_id","fraction_mitochondrial", "fraction_unspliced" ,
+#             "sample_id","self_reported_ethnicity", "sex", "supercluster_term",
+#             "total_UMIs", "total_genes")]
+#   return(x)
+# })
+# metadata <- Reduce(rbind, metadata.list)
+# 
+# # create seurat object for both datasets
+# merged.object <- CreateSeuratObject(counts = data.list, meta.data = metadata) # 59236 features across 3369219 samples within 1 assay 
+# # save object
+# saveRDS(
+#   object = merged.object,
+#   file = paste0(workdir, "/ref_siletti/ref_siletti_neuron_nonneuron_seurat_supercluster_term_ensembl.Rds")
+# )
+# # drop
+# merged.object<-NULL
+```
+
+
+2 analyses levels: all cell types (Non-neurons, Neurons rds), astrocyte subtypes (astrocyte rds)
+
+```{r Create reference pseudobulk}
+# # set pseudobulk level
+# cell_annot = "cluster_id" # supercluster_term OR cell_type OR cluster_id
+# annot_name = "subtype" #  celltype OR supercluster OR subtype
+# 
+# # load RDS data file
+# file="f86dbeff-36bf-4036-a828-c2c43b052cf2.rds" # ref_siletti_neuron_nonneuron_seurat_supercluster_term_ensembl.Rds OR "f86dbeff-36bf-4036-a828-c2c43b052cf2.rds" (all neurons + non-neurons, or astrocytes only)
+# seu <- readRDS(paste0(workdir, "/ref_siletti/",file))
+# 
+# # if RNA counts stored in data assay
+# if (nrow(seu[["RNA"]]$counts) == 0) {
+#   seu <- formatassay(seu)
+# }
+# # pseudobulk the counts based on donor-condition-celltype
+# pseudo_seu <- AggregateExpression(seu, assays = "RNA", return.seurat = T, group.by = c("donor_id", cell_annot))
+# # format counts matrix
+# ref_cts <- as.matrix(pseudo_seu[["RNA"]]$counts)
+# 
+# # format sample metadata
+# ref_coldata <- data.frame(pseudo_seu@meta.data)
+# donor_metadata <- data.frame(seu@meta.data)[c("donor_id","development_stage","disease","self_reported_ethnicity","sex","cell_type")] %>% unique
+# ref_coldata <- merge(ref_coldata, donor_metadata)
+# # optional label editing
+# # ref_coldata$cluster_id <- paste0("Astro_", ref_coldata$cluster_id )
+# 
+# # save counts matrix
+# write.csv(ref_cts, paste0(workdir,"/ref_siletti/siltetti_",annot_name,"_pseudobulk_counts.csv"),row.names=TRUE)
+# # save sample metadata
+# write.csv(ref_coldata, paste0(workdir,"/ref_siletti/siltetti_",annot_name,"_pseudobulk_metadata.csv"),row.names=TRUE)
+```
+
+Load formatted reference data
+```{r}
+# ### Reference cell type counts ###
+# cell_annot = "cluster_id" # supercluster_term OR cell_type OR cluster_id
+# annot_name = "subtype" #  celltype OR supercluster OR subtype
+# 
+# ref_cts <- read.csv(paste0(workdir,"/ref_siletti/siltetti_",annot_name,"_pseudobulk_counts.csv"),row.names = 1)
+# ref_coldata <- read.csv(paste0(workdir,"/ref_siletti/siltetti_",annot_name,"_pseudobulk_metadata.csv"),row.names = 1)
+# ### End of Reference cell type counts ###
+```
+
+
+
+# Load progenitor bulk RNA-seq data
+```{r Reference DE analysis pt1}
+### Progenitor counts ###
+# load un-normalized count data "as only the count values allow assessing the measurement precision correctly"
+# DESeq2 model internally corrects for library size, so transformed or normalized values such as counts scaled by library size should not be used as input
+as_datadir=paste0(workdir,"/raw_data")
+# extract and separate
+data <- read.table(paste0(as_datadir,"/BMP4_CNTF_wo2W_counts.txt"),sep="\t",header=T) # BMP4_CNTF_wo2W_counts.txt OR BMP4_CNTF_counts.txt
+metadata <- data[c(2:11),-c(2:33)] # first set of rows, excluding PC columns
+pc <- data[-c(1:42), c(4:33)] # PC loadings by gene for each sample, selecting PC columns, excluding metadata and by sample PCs
+exp <- data[-c(1:42),-c(4:33)]
+# format counts
+rownames(exp) <- exp[,1]
+cts <- as.matrix(exp[,-c(1:3)])
+class(cts) <- "numeric"
+# format sample data
+rownames(metadata) <- metadata[,1]
+coldata <- t(metadata)[-1,] %>% data.frame()
+coldata$cell_line <- as.factor(coldata$cell_line)
+coldata$target <- as.factor(coldata$target)
+coldata$differentiation <- as.factor(coldata$differentiation)
+coldata$time <- as.factor(coldata$time)
+coldata$treatment <- as.factor(coldata$treatment)
+coldata$cell_line_batch <- as.factor(coldata$cell_line_batch)
+coldata$target_treatment <- paste0(coldata$target, "_", coldata$treatment)
+
+# subset progenitor samples
+keep_samples = grep("_progenitor_",rownames(coldata),value=TRUE)
+cts <- cts[,keep_samples]
+coldata <- coldata[keep_samples,]
+
+# check samples are in same order in counts and coldata
+all(rownames(coldata) == colnames(cts))
+### End of Progenitor counts ###
+```
+
+# Reference-Progenitor Differential Analysis
+``` {r}
+# ### Merged counts matrix and coldata ###
+# coldata$source <- "bulk"
+# ref_coldata$source <- "pseudobulk"
+# coldata$id <- rownames(coldata)
+# ref_coldata$id <- ref_coldata$orig.ident
+# coldata$celltype <- "progenitor"
+# ref_coldata$celltype <- ref_coldata$cluster_id # supercluster_term OR cell_type OR cluster_id
+# common_genes <- intersect(rownames(ref_cts), rownames(cts)) # n.genes = 17849
+# common_cols <- intersect(colnames(ref_coldata), colnames(coldata)) # ncols = 3
+# 
+# merged_cts <- cbind(cts[common_genes, ], ref_cts[common_genes, ])
+# merged_coldata <- rbind(coldata[,common_cols], ref_coldata[,common_cols])
+# rownames(merged_coldata) <- merged_coldata$id
+# 
+# rownames(merged_coldata) <- gsub(" ", ".", rownames(merged_coldata))
+# rownames(merged_coldata) <- gsub("-", ".", rownames(merged_coldata))
+# 
+# ### End of Merged counts matrix and coldata ###
+# 
+# 
+# ### Create dds ###
+# checkorder <- all(rownames(merged_coldata) == colnames(merged_cts))
+# # reorder if not
+# if (checkorder == FALSE) {
+#   df <- merged_coldata[match(colnames(merged_cts), rownames(merged_coldata)), ]
+#   checkorder <- all(rownames(df) == colnames(merged_cts))
+#   if (checkorder == TRUE) {
+#     merged_coldata <- df
+#   }
+# }
+# # check order
+# all(rownames(merged_coldata) == colnames(merged_cts))
+# # create dds set to compare celltype
+# dds <- DESeqDataSetFromMatrix(countData = merged_cts,
+#                               colData = merged_coldata,
+#                               design = ~ celltype) 
+# dds
+# 
+# # add feature data to dds metadata columns
+# featureData <- data.frame(gene=rownames(merged_cts))
+# featureData <- merge(featureData, exp[c(1:3)], by.x="gene", by.y="X")
+# # check matching row order
+# checkorder <- all(rownames(dds) == featureData$gene)
+# if (checkorder == FALSE) {
+#   featureData <- featureData[match(rownames(dds), featureData$gene), ]
+# }
+# # add to dds object
+# mcols(dds) <- DataFrame(mcols(dds), featureData)
+# mcols(dds)
+# ### End of Create dds ###
+# 
+# 
+# ### run DESeq analysis ###
+# dds <- DESeq(dds)
+# # save
+# saveRDS(dds, file = paste0(workdir,"/ref_siletti/siletti_wo2W_",annot_name,"_de_analysis.RDS"))
+# ### End of run DESeq analysis ###
+```
+
+```{r}
+# # set pseudobulk level
+# cell_annot = "cluster_id" # (1) supercluster_term OR (2) cell_type OR (3) cluster_id
+# annot_name = "subtype" # (1) supercluster OR (2) celltype OR (3) subtype
+# 
+# # read in DE analysis results
+# dds <- readRDS(  paste0(workdir,"/ref_siletti/siletti_wo2W_",annot_name,"_de_analysis.RDS") )
+# # # extract comparisons of choice
+# # astro_res <- results(dds, contrast=c("celltype","astrocyte", "progenitor"))
+# # fibro_res <- results(dds, contrast=c("celltype","fibroblast", "progenitor"))
+# # neuron_res <- results(dds, contrast=c("celltype","neuron", "progenitor"))
+# # vas_res <- results(dds, contrast=c("celltype","vascular", "progenitor"))
+# berglia_res <- results(dds, contrast=c("celltype","Bergmann glia", "progenitor"))
+```
+
+
+# Load bulk RNA differential analysis outputs
+```{r}
+res.file <- paste0(workdir, "/analysed_data/differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+# Replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+    setNames(nm = dge_res_sheets$sheets)
+dgeBulk_sel <- dgeBulk[c("BMP4_diff_3w - progenitor|untreated",
+                         "CNTF_diff_3w - progenitor|untreated")]
+
+ref_bmp4=dgeBulk_sel$`BMP4_diff_3w - progenitor|untreated`
+ref_cntf=dgeBulk_sel$`CNTF_diff_3w - progenitor|untreated`
+```
+
+Create and save results table
+```{r}
+# # set cell types
+# celltype_l <- colData(dds)$celltype %>% unique()
+# celltype_l <- celltype_l[!str_detect(celltype_l,pattern="progenitor")]
+# outdf <- data.frame()
+# for (celltype in celltype_l) {
+#   res <- results(dds, contrast=c("celltype",celltype,"progenitor"))
+#   res_df <- data.frame(res)
+#   res_df$id <- rownames(res_df)
+#   res_df$celltype <- celltype
+# 
+#   # limit to top 200 significant DEGs
+#   res_df %<>%
+#     arrange(padj) %>% slice_head(n=200)
+# 
+#   outdf <- rbind(outdf, res_df)
+# }
+# write.csv(outdf, paste0(workdir,"/ref_siletti/siletti_",annot_name,"_progenitor_differential_analysis_top200.csv"), row.names=TRUE)
+```
+
+# Plots
+## Cell types
+```{r}
+# set pseudobulk level
+cell_annot = "cell_type" # (1) supercluster_term OR (2) cell_type OR (3) cluster_id
+annot_name = "celltype" # (1) supercluster OR (2) celltype OR (3) subtype
+
+# read in DE analysis results
+dds <- readRDS(  paste0(workdir,"/ref_siletti/siletti_wo2W_",annot_name,"_de_analysis.RDS") )
+```
+
+### Correlation: Scatterplot
+```{r Reference DE correlation, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5}
+# # set significance thresholds
+# threshold_l <- list(0.1, 0.05, 0.01, 0.005)
+# 
+# ## read and format reference cell type DEs
+# dds <- readRDS(paste0(workdir,"/ref_siletti/siletti_wo2W_",annot_name,"_de_analysis.RDS"))
+# celltype_l <- colData(dds)$celltype %>% unique()
+# celltype_l <- celltype_l[!str_detect(celltype_l,pattern="progenitor")]
+# 
+# for (celltype in celltype_l) {
+#   # celltype="Vascular" # test 
+#   res <- results(dds, contrast=c("celltype",celltype,"progenitor")) 
+#   res_df <- data.frame(res)
+#   res_df$id <- rownames(res_df)
+#      
+#   for (threshold in threshold_l) {
+#   
+#     ## bmp4 comparison
+#     bmp4_degs <- merge(ref_bmp4, res_df, by="id")
+#     bmp4_degs_p_threshold <- bmp4_degs[bmp4_degs$pvalue.x < threshold,]
+#     ### baseMeans
+#     p1 <- ggplot(bmp4_degs_p_threshold, aes(x=baseMean.x, y=baseMean.y)) +
+#       geom_point(size=1,alpha=0.5) + stat_cor(method = "pearson") +
+#       ggtitle("Siletti Reference - BMP4 DEG Count Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     ### log2FoldChanges 
+#     p2 <- ggplot(bmp4_degs_p_threshold, aes(x=log2FoldChange.x, y=log2FoldChange.y)) +
+#       geom_point(size=1,alpha=0.5) + stat_cor(method = "pearson") +
+#       ggtitle("Siletti Reference - BMP4 DEG Effect Size Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     ### adjusted p values
+#     p3 <- ggplot(bmp4_degs_p_threshold, aes(x=pvalue.x, y=padj)) +
+#       geom_point(size=1, alpha=0.5) + stat_cor(method = "pearson") + # xlim(0, 0.05) + # limiting x axis  
+#       ggtitle("Siletti Reference - BMP4 DEG Significance Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     
+#     ## cntf comparison
+#     cntf_degs <- merge(ref_cntf, res_df, by="id")
+#     cntf_degs_p_threshold <- cntf_degs[cntf_degs$pvalue.x < threshold,]
+#     ### baseMeans
+#     p4 <- ggplot(cntf_degs_p_threshold, aes(x=baseMean.x, y=baseMean.y)) +
+#       geom_point(size=1,alpha=0.5) + stat_cor(method = "pearson") +
+#       ggtitle("Siletti Reference - CNTF DEG Count Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     ### log2FoldChanges 
+#     p5 <- ggplot(cntf_degs_p_threshold, aes(x=log2FoldChange.x, y=log2FoldChange.y)) +
+#       geom_point(size=1,alpha=0.5) + stat_cor(method = "pearson") +
+#       ggtitle("Siletti Reference - CNTF DEG Effect Size Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     ### adjusted p values
+#     p6 <- ggplot(cntf_degs_p_threshold, aes(x=pvalue.x, y=padj)) +
+#       geom_point(size=1, alpha=0.5) + stat_cor(method = "pearson")  + # xlim(0, 0.05) + # limiting x axis  
+#       ggtitle("Siletti Reference - CNTF DEG Significance Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     
+#     ggarrange(p1, p2, p3 , p4 , p5 , p6, heights = c(10, 10), nrow = 2, ncol=3, align = "h")
+#     ggsave(file=paste0(workdir,"/ref_siletti/plots/scatterplot_wo2w_correlation_p",threshold,"_",celltype,"_",annot_name,".svg"), width=15, height=8)
+#     ggsave(file=paste0(workdir,"/ref_siletti/plots/scatterplot_wo2w_correlation_p",threshold,"_",celltype,"_",annot_name,".png"), width=15, height=8)
+#   }
+# }
+
+```
+
+
+### Correlation: Heatmap
+At different adjusted p value thresholds for bulk RNA-seq DEGs
+```{r Correlation coefficient summary, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=10, fig.height=4.5}
+# set significance threshold
+threshold_l <- list(0.1, 0.05, 0.01, 0.005)
+# set cell types
+celltype_l <- colData(dds)$celltype %>% unique()
+celltype_l <- celltype_l[!str_detect(celltype_l,pattern="progenitor")]
+
+outdf <- data.frame()
+for (celltype in celltype_l) {
+  
+  res <- results(dds, contrast=c("celltype",celltype,"progenitor")) 
+  res_df <- data.frame(res)
+  res_df$id <- rownames(res_df)
+  
+    celldf <- data.frame()
+    for (threshold in threshold_l) {
+  
+    ## bmp4 comparison
+    bmp4_degs <- merge(ref_bmp4, res_df, by="id")
+    bmp4_degs_p_threshold <- bmp4_degs[bmp4_degs$pvalue.x < threshold,]
+    # count genes
+    bmp_ngene <- length(unique(bmp4_degs_p_threshold$id))
+    # derive log2FoldChanges correlation coefficient
+    bmp_coef <- cor(bmp4_degs_p_threshold$log2FoldChange.x, bmp4_degs_p_threshold$log2FoldChange.y, method = "pearson",  use = "complete.obs")
+  
+    ## cntf comparison
+    cntf_degs <- merge(ref_cntf, res_df, by="id")
+    cntf_degs_p_threshold <- cntf_degs[cntf_degs$pvalue.x < threshold,]
+    # count genes
+    cntf_ngene <- length(unique(cntf_degs_p_threshold$id))
+    # derive log2FoldChanges correlation coefficient
+    cntf_coef <- cor(cntf_degs_p_threshold$log2FoldChange.x, cntf_degs_p_threshold$log2FoldChange.y, method = "pearson", use = "complete.obs")
+    
+    df <- data.frame(celltype=celltype, pthreshold=threshold, n_bmpgene=bmp_ngene, n_cntfgene=cntf_ngene, bmp_coef=bmp_coef, cntf_coef=cntf_coef)
+    celldf <- rbind(celldf, df)
+    }
+outdf <- rbind(outdf, celldf)
+}
+
+# save
+# write.csv(outdf, paste0(workdir,"/ref_siletti/siletti_correlation_coefficients_",annot_name,"_wo2w.csv"))
+```
+
+
+```{r, fig.width=7.5, fig.height=7.5}
+# read
+# outdf <- read.csv(paste0(workdir,"/ref_siletti/siletti_correlation_coefficients_",annot_name,"_wo2w.csv"),row.names=1)
+
+# rename short/long/lowercase cell type labels
+outdf[outdf$celltype == "central nervous system macrophage",]$celltype <- "CNS Macrophage"
+outdf[outdf$celltype == "vascular associated smooth muscle cell",]$celltype <- "Vascular SMC"
+outdf[outdf$celltype == "oligodendrocyte precursor cell",]$celltype <- "OPC"
+outdf[outdf$celltype == "choroid plexus epithelial cell",]$celltype <- "Choroid Plexus \n Epithelial Cell"
+outdf$celltype <- tools::toTitleCase(outdf$celltype)
+
+# format data types
+outdf_l <- pivot_longer(outdf, cols=c("bmp_coef","cntf_coef"), names_to="Comparison", values_to="Coefficient")
+outdf_l$celltype <- as.factor(outdf_l$celltype)
+outdf_l$pthreshold <- as.factor(outdf_l$pthreshold)
+
+# plot
+p <- ggplot(outdf_l, aes(x=pthreshold, y=celltype, fill=Coefficient)) +
+  geom_tile() +
+  scale_fill_gradient(low="white", high="darkblue", na.value = "white") +
+  theme_bw() +
+  theme(axis.text.y = element_text(angle = 0, vjust = 1, hjust=1)) +
+  facet_wrap("Comparison") + 
+  ggtitle("Siletti celltype correlation coefficients")
+p
+# # save plot
+# ggsave(file=paste0(workdir,"/ref_siletti/plots/heatmap_siletti_",annot_name,"_correlation.svg"), width=15, height=6)
+# ggsave(file=paste0(workdir,"/ref_siletti/plots/heatmap_siletti_",annot_name,"_correlation.png"), width=15, height=6)
+```
+
+Hierarchical clustering heatmap
+```{r, fig.width=6.5, fig.height=3.5}
+# select astrocyte type
+type="CNTF" # BMP4 OR CNTF
+
+# Select column based on astrocyte type 
+# 5 = BMP4; 6 = CNTF
+if (type == "BMP4") {
+  Ncol = 5
+  Coef_col = "bmp_coef"
+} else {
+  Ncol = 6
+  Coef_col = "cntf_coef"
+}
+
+# Format data 
+outdf_w <- outdf[,c(1,2,Ncol)] %>%
+  pivot_wider(names_from = celltype, values_from = Coef_col) %>% as.matrix
+rownames(outdf_w) <- outdf_w[,1]
+outdf_w <- outdf_w[,-1]
+# select colours
+mycol <- colorRamp2(breaks = c(0.4, 0.7),  colors = c("white", "darkblue"))
+# create plot
+hm <- Heatmap(outdf_w, 
+        name = "Correlation",
+        column_title = "Cell Type", 
+        column_names_gp = grid::gpar(fontsize = 10),
+        row_title = "Significance levels",
+        row_names_gp = grid::gpar(fontsize = 10),
+        col = mycol) 
+draw(hm,
+   column_title=type,
+   column_title_gp=grid::gpar(fontsize=16))
+# # save
+# svg(paste0(workdir,"/ref_siletti/plots/heatmap_correlation_",type,"_",annot_name,".svg"), width=10, height=4.5)
+#    draw(hm,
+#    column_title=type,
+#    column_title_gp=grid::gpar(fontsize=16))
+# dev.off()
+```
+
+```{r, fig.width=6.5, fig.height=3.5}
+# select astrocyte type
+type="BMP4" # BMP4 OR CNTF
+
+# Select column based on astrocyte type 
+# 5 = BMP4; 6 = CNTF
+if (type == "BMP4") {
+  Ncol = 5
+  Coef_col = "bmp_coef"
+} else {
+  Ncol = 6
+  Coef_col = "cntf_coef"
+}
+
+# Format data 
+outdf_w <- outdf[,c(1,2,Ncol)] %>%
+  pivot_wider(names_from = celltype, values_from = Coef_col) %>% as.matrix
+rownames(outdf_w) <- outdf_w[,1]
+outdf_w <- outdf_w[,-1]
+# select colours
+mycol <- colorRamp2(breaks = c(0.4, 0.7),  colors = c("white", "darkblue"))
+# create plot
+hm <- Heatmap(outdf_w, 
+        name = "Correlation",
+        column_title = "Cell Type", 
+        column_names_gp = grid::gpar(fontsize = 10),
+        row_title = "Significance levels",
+        row_names_gp = grid::gpar(fontsize = 10),
+        col = mycol) 
+draw(hm,
+   column_title=type,
+   column_title_gp=grid::gpar(fontsize=16))
+ 
+# # save
+# svg(paste0(workdir,"/ref_siletti/plots/heatmap_correlation_",type,"_",annot_name,".svg"), width=10, height=4.5)
+#    draw(hm,
+#    column_title=type,
+#    column_title_gp=grid::gpar(fontsize=16))
+# dev.off()
+```
+
+```{r, fig.width=10.5, fig.height=7.5}
+# plot number of genes
+outdf_genel <-  pivot_longer(outdf[,-c(5,6)], cols=c("n_bmpgene","n_cntfgene"), names_to="Comparison", values_to="NGene")
+ggplot(outdf_genel, aes(x = pthreshold, y = NGene, color = Comparison, group = Comparison)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~celltype) +
+  labs(title = "Comparison of NGene by pthreshold",
+       x = "Pthreshold",
+       y = "NGene",
+       color = "Comparison")
+# save plot
+# ggsave(file=paste0(workdir,"/ref_siletti/plots/scatterplot_siletti_",annot_name,"_genecount_correlation.svg"), width=10, height=10)
+# ggsave(file=paste0(workdir,"/ref_siletti/plots/scatterplot_siletti_",annot_name,"_genecount_correlation.png"), width=10, height=10)
+
+```
+
+## Astrocyte subtypes
+```{r}
+# set pseudobulk level
+cell_annot = "cluster_id" # (1) supercluster_term OR (2) cell_type OR (3) cluster_id
+annot_name = "subtype" # (1) supercluster OR (2) celltype OR (3) subtype
+
+# read in DE analysis results
+dds <- readRDS(  paste0(workdir,"/ref_siletti/siletti_wo2W_",annot_name,"_de_analysis.RDS") )
+```
+
+### Correlation: Scatterplot
+```{r, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5}
+# # set significance thresholds
+# threshold_l <- list(0.1, 0.05, 0.01, 0.005)
+# 
+# ## read and format reference cell type DEs
+# dds <- readRDS(paste0(workdir,"/ref_siletti/siletti_wo2W_",annot_name,"_de_analysis.RDS"))
+# celltype_l <- colData(dds)$celltype %>% unique()
+# celltype_l <- celltype_l[!str_detect(celltype_l,pattern="progenitor")]
+# 
+# for (celltype in celltype_l) {
+#   # celltype="Vascular" # test 
+#   res <- results(dds, contrast=c("celltype",celltype,"progenitor")) 
+#   res_df <- data.frame(res)
+#   res_df$id <- rownames(res_df)
+#      
+#   for (threshold in threshold_l) {
+#   
+#     ## bmp4 comparison
+#     bmp4_degs <- merge(ref_bmp4, res_df, by="id")
+#     bmp4_degs_p_threshold <- bmp4_degs[bmp4_degs$pvalue.x < threshold,]
+#     ### baseMeans
+#     p1 <- ggplot(bmp4_degs_p_threshold, aes(x=baseMean.x, y=baseMean.y)) +
+#       geom_point(size=1,alpha=0.5) + stat_cor(method = "pearson") +
+#       ggtitle("Siletti Reference - BMP4 DEG Count Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     ### log2FoldChanges 
+#     p2 <- ggplot(bmp4_degs_p_threshold, aes(x=log2FoldChange.x, y=log2FoldChange.y)) +
+#       geom_point(size=1,alpha=0.5) + stat_cor(method = "pearson") +
+#       ggtitle("Siletti Reference - BMP4 DEG Effect Size Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     ### adjusted p values
+#     p3 <- ggplot(bmp4_degs_p_threshold, aes(x=pvalue.x, y=padj)) +
+#       geom_point(size=1, alpha=0.5) + stat_cor(method = "pearson") + # xlim(0, 0.05) + # limiting x axis  
+#       ggtitle("Siletti Reference - BMP4 DEG Significance Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     
+#     ## cntf comparison
+#     cntf_degs <- merge(ref_cntf, res_df, by="id")
+#     cntf_degs_p_threshold <- cntf_degs[cntf_degs$pvalue.x < threshold,]
+#     ### baseMeans
+#     p4 <- ggplot(cntf_degs_p_threshold, aes(x=baseMean.x, y=baseMean.y)) +
+#       geom_point(size=1,alpha=0.5) + stat_cor(method = "pearson") +
+#       ggtitle("Siletti Reference - CNTF DEG Count Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     ### log2FoldChanges 
+#     p5 <- ggplot(cntf_degs_p_threshold, aes(x=log2FoldChange.x, y=log2FoldChange.y)) +
+#       geom_point(size=1,alpha=0.5) + stat_cor(method = "pearson") +
+#       ggtitle("Siletti Reference - CNTF DEG Effect Size Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     ### adjusted p values
+#     p6 <- ggplot(cntf_degs_p_threshold, aes(x=pvalue.x, y=padj)) +
+#       geom_point(size=1, alpha=0.5) + stat_cor(method = "pearson")  + # xlim(0, 0.05) + # limiting x axis  
+#       ggtitle("Siletti Reference - CNTF DEG Significance Correlation") + 
+#       theme(plot.title = element_text(size = 10, face = "bold"))
+#     
+#     ggarrange(p1, p2, p3 , p4 , p5 , p6, heights = c(10, 10), nrow = 2, ncol=3, align = "h")
+#     ggsave(file=paste0(workdir,"/ref_siletti/plots/scatterplot_wo2w_correlation_p",threshold,"_",celltype,"_",annot_name,".svg"), width=15, height=8)
+#     ggsave(file=paste0(workdir,"/ref_siletti/plots/scatterplot_wo2w_correlation_p",threshold,"_",celltype,"_",annot_name,".png"), width=15, height=8)
+#   }
+# }
+
+```
+
+
+### Correlation: Heatmap
+At different adjusted p value thresholds for bulk RNA-seq DEGs
+```{r, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=10, fig.height=4.5}
+# set significance threshold
+threshold_l <- list(0.1, 0.05, 0.01, 0.005)
+# set cell types
+celltype_l <- colData(dds)$celltype %>% unique()
+celltype_l <- celltype_l[!str_detect(celltype_l,pattern="progenitor")]
+
+outdf <- data.frame()
+for (celltype in celltype_l) {
+  
+  res <- results(dds, contrast=c("celltype",celltype,"progenitor")) 
+  res_df <- data.frame(res)
+  res_df$id <- rownames(res_df)
+  
+    celldf <- data.frame()
+    for (threshold in threshold_l) {
+  
+    ## bmp4 comparison
+    bmp4_degs <- merge(ref_bmp4, res_df, by="id")
+    bmp4_degs_p_threshold <- bmp4_degs[bmp4_degs$pvalue.x < threshold,]
+    # count genes
+    bmp_ngene <- length(unique(bmp4_degs_p_threshold$id))
+    # derive log2FoldChanges correlation coefficient
+    bmp_coef <- cor(bmp4_degs_p_threshold$log2FoldChange.x, bmp4_degs_p_threshold$log2FoldChange.y, method = "pearson",  use = "complete.obs")
+  
+    ## cntf comparison
+    cntf_degs <- merge(ref_cntf, res_df, by="id")
+    cntf_degs_p_threshold <- cntf_degs[cntf_degs$pvalue.x < threshold,]
+    # count genes
+    cntf_ngene <- length(unique(cntf_degs_p_threshold$id))
+    # derive log2FoldChanges correlation coefficient
+    cntf_coef <- cor(cntf_degs_p_threshold$log2FoldChange.x, cntf_degs_p_threshold$log2FoldChange.y, method = "pearson", use = "complete.obs")
+    
+    df <- data.frame(celltype=celltype, pthreshold=threshold, n_bmpgene=bmp_ngene, n_cntfgene=cntf_ngene, bmp_coef=bmp_coef, cntf_coef=cntf_coef)
+    celldf <- rbind(celldf, df)
+    }
+outdf <- rbind(outdf, celldf)
+}
+
+# save
+# write.csv(outdf, paste0(workdir,"/ref_siletti/siletti_correlation_coefficients_",annot_name,"_wo2w.csv"))
+```
+
+
+```{r, fig.width=7.5, fig.height=7.5}
+# read
+# outdf <- read.csv(paste0(workdir,"/ref_siletti/siletti_correlation_coefficients_",annot_name,"_wo2w.csv"),row.names=1)
+
+# astrocyte subtypes
+outdf$celltype <- paste0("Astro_",outdf$celltype)
+outdf$celltype <- tools::toTitleCase(outdf$celltype)
+
+# format data types
+outdf_l <- pivot_longer(outdf, cols=c("bmp_coef","cntf_coef"), names_to="Comparison", values_to="Coefficient")
+outdf_l$celltype <- as.factor(outdf_l$celltype)
+outdf_l$pthreshold <- as.factor(outdf_l$pthreshold)
+
+# plot
+p <- ggplot(outdf_l, aes(x=pthreshold, y=celltype, fill=Coefficient)) +
+  geom_tile() +
+  scale_fill_gradient(low="white", high="darkblue", na.value = "white") +
+  theme_bw() +
+  theme(axis.text.y = element_text(angle = 0, vjust = 1, hjust=1)) +
+  facet_wrap("Comparison") + 
+  ggtitle("Siletti celltype correlation coefficients")
+p
+# # save plot
+# ggsave(file=paste0(workdir,"/ref_siletti/plots/heatmap_siletti_",annot_name,"_correlation.svg"), width=15, height=6)
+# ggsave(file=paste0(workdir,"/ref_siletti/plots/heatmap_siletti_",annot_name,"_correlation.png"), width=15, height=6)
+```
+
+Hierarchical clustering heatmap
+```{r, fig.width=6.5, fig.height=3.5}
+# select astrocyte type
+type="CNTF" # BMP4 OR CNTF
+
+# Select column based on astrocyte type 
+# 5 = BMP4; 6 = CNTF
+if (type == "BMP4") {
+  Ncol = 5
+  Coef_col = "bmp_coef"
+} else {
+  Ncol = 6
+  Coef_col = "cntf_coef"
+}
+
+# Format data 
+outdf_w <- outdf[,c(1,2,Ncol)] %>%
+  pivot_wider(names_from = celltype, values_from = Coef_col) %>% as.matrix
+rownames(outdf_w) <- outdf_w[,1]
+outdf_w <- outdf_w[,-1]
+# select colours
+mycol <- colorRamp2(breaks = c(0.4, 0.7),  colors = c("white", "darkblue"))
+# create plot
+hm <- Heatmap(outdf_w, 
+        name = "Correlation",
+        column_title = "Cell Type", 
+        column_names_gp = grid::gpar(fontsize = 10),
+        row_title = "Significance levels",
+        row_names_gp = grid::gpar(fontsize = 10),
+        col = mycol) 
+ draw(hm,
+   column_title=type,
+   column_title_gp=grid::gpar(fontsize=16))
+# # save
+# svg(paste0(workdir,"/ref_siletti/plots/heatmap_correlation_",type,"_",annot_name,".svg"), width=10, height=4.5)
+#    draw(hm,
+#    column_title=type,
+#    column_title_gp=grid::gpar(fontsize=16))
+# dev.off()
+```
+
+```{r, fig.width=6.5, fig.height=3.5}
+# select astrocyte type
+type="BMP4" # BMP4 OR CNTF
+
+# Select column based on astrocyte type 
+# 5 = BMP4; 6 = CNTF
+if (type == "BMP4") {
+  Ncol = 5
+  Coef_col = "bmp_coef"
+} else {
+  Ncol = 6
+  Coef_col = "cntf_coef"
+}
+
+# Format data 
+outdf_w <- outdf[,c(1,2,Ncol)] %>%
+  pivot_wider(names_from = celltype, values_from = Coef_col) %>% as.matrix
+rownames(outdf_w) <- outdf_w[,1]
+outdf_w <- outdf_w[,-1]
+# select colours
+mycol <- colorRamp2(breaks = c(0.4, 0.7),  colors = c("white", "darkblue"))
+# create plot
+hm <- Heatmap(outdf_w, 
+        name = "Correlation",
+        column_title = "Cell Type", 
+        column_names_gp = grid::gpar(fontsize = 10),
+        row_title = "Significance levels",
+        row_names_gp = grid::gpar(fontsize = 10),
+        col = mycol) 
+draw(hm,
+   column_title=type,
+   column_title_gp=grid::gpar(fontsize=16))
+ 
+# # save
+# svg(paste0(workdir,"/ref_siletti/plots/heatmap_correlation_",type,"_",annot_name,".svg"), width=10, height=4.5)
+#    draw(hm,
+#    column_title=type,
+#    column_title_gp=grid::gpar(fontsize=16))
+# dev.off()
+```
+
+```{r, fig.width=10.5, fig.height=7.5}
+# plot number of genes
+outdf_genel <-  pivot_longer(outdf[,-c(5,6)], cols=c("n_bmpgene","n_cntfgene"), names_to="Comparison", values_to="NGene")
+ggplot(outdf_genel, aes(x = pthreshold, y = NGene, color = Comparison, group = Comparison)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~celltype) +
+  labs(title = "Comparison of NGene by pthreshold",
+       x = "Pthreshold",
+       y = "NGene",
+       color = "Comparison")
+# save plot
+# ggsave(file=paste0(workdir,"/ref_siletti/plots/scatterplot_siletti_",annot_name,"_genecount_correlation.svg"), width=10, height=10)
+# ggsave(file=paste0(workdir,"/ref_siletti/plots/scatterplot_siletti_",annot_name,"_genecount_correlation.png"), width=10, height=10)
+
+```
+Alternative: Red/blue colour
+```{r, fig.width=6.5, fig.height=3.5}
+type="CNTF" # BMP4 OR CNTF
+if (type == "BMP4") {
+  Ncol = 5
+  Coef_col = "bmp_coef"
+} else {
+  Ncol = 6
+  Coef_col = "cntf_coef"
+}
+
+outdf_w <- outdf[,c(1,2,Ncol)] %>%
+  pivot_wider(names_from = celltype, values_from = Coef_col) %>% as.matrix # bmp_coef OR cntf_coef
+rownames(outdf_w) <- outdf_w[,1]
+outdf_w <- outdf_w[,-1]
+# orig colour pal
+hm <- Heatmap(outdf_w,
+        name = "Correlation",
+        column_title = "Cell Type",
+        column_names_gp = grid::gpar(fontsize = 10),
+        row_title = "p-value threshold",
+        row_names_gp = grid::gpar(fontsize = 10))
+draw(hm,
+   column_title=type,
+   column_title_gp=grid::gpar(fontsize=16))
+# svg(paste0(workdir,"/ref_siletti/plots/heatmap_correlation_",type,"_",annot_name,"_RdBlu.svg"), width=10, height=4.5)
+#    draw(hm,
+#    column_title=type,
+#    column_title_gp=grid::gpar(fontsize=16))
+# dev.off()
+```
+
+```{r, fig.width=6.5, fig.height=3.5}
+type="BMP4" # BMP4 OR CNTF
+if (type == "BMP4") {
+  Ncol = 5
+  Coef_col = "bmp_coef"
+} else {
+  Ncol = 6
+  Coef_col = "cntf_coef"
+}
+
+outdf_w <- outdf[,c(1,2,Ncol)] %>%
+  pivot_wider(names_from = celltype, values_from = Coef_col) %>% as.matrix # bmp_coef OR cntf_coef
+rownames(outdf_w) <- outdf_w[,1]
+outdf_w <- outdf_w[,-1]
+# orig colour pal
+hm <- Heatmap(outdf_w,
+        name = "Correlation",
+        column_title = "Cell Type",
+        column_names_gp = grid::gpar(fontsize = 10),
+        row_title = "p-value threshold",
+        row_names_gp = grid::gpar(fontsize = 10))
+draw(hm,
+   column_title=type,
+   column_title_gp=grid::gpar(fontsize=16))
+# svg(paste0(workdir,"/ref_siletti/plots/heatmap_correlation_",type,"_",annot_name,"_RdBlu.svg"), width=10, height=4.5)
+#    draw(hm,
+#    column_title=type,
+#    column_title_gp=grid::gpar(fontsize=16))
+# dev.off()
+```
+
+
+
