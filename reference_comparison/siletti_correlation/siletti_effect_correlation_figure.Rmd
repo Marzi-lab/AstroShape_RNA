@@ -16,12 +16,13 @@ output:
     df_print: paged
 ---
 
-Load packages
+
 ```{r setup, include=FALSE}
+# Load packages
 knitr::opts_chunk$set(echo = TRUE)
 library(DESeq2)
 library(ggpubr)
-library(BPCells) # remotes::install_github("bnprks/BPCells")
+# library(BPCells) # remotes::install_github("bnprks/BPCells")
 library(Seurat) 
 library(SeuratObject)
 library(SeuratDisk)
@@ -32,9 +33,8 @@ library(stringr)
 library(tidyr)
 library(ComplexHeatmap)
 ```
-
-Set directories
 ``` {r}
+# Set directories
 workdir = "/home/pu1918/RDS/user/pu1918/ephemeral/AS_astrocytes"
 ```
 
@@ -910,5 +910,7 @@ draw(hm,
 # dev.off()
 ```
 
-
+```{r}
+sessionInfo()
+```
 

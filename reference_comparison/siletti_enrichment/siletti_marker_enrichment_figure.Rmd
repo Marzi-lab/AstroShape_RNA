@@ -1,0 +1,364 @@
+---
+title: "siletti_marker_enrichment_figure"
+author: "Paulina"
+date: "2024-08-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(DESeq2)
+library(ggpubr)
+library(BPCells) # remotes::install_github("bnprks/BPCells")
+library(Seurat) 
+library(SeuratObject)
+library(SeuratDisk)
+library(Azimuth) # remotes::install_github('satijalab/azimuth', ref = 'master')
+library(circlize)
+library(purrr)
+library(stringr)
+library(tidyr)
+library(ComplexHeatmap)
+```
+
+``` {r}
+workdir = "/home/pu1918/RDS/user/pu1918/ephemeral/AS_astrocytes"
+```
+
+## Load data
+
+Reference dataset (Siletti et al. 2023) can be downloaded from CELLXGENE (Human Brain Cell Atlas v1.0)
+``` {bash}
+# 3 Files: All neurons h5ad  (31G); All non-neurons h5ad (4.4G); Supercluster: Astrocyte (850M)
+# wget https://datasets.cellxgene.cziscience.com/b9171f05-8112-4a55-95f2-4cf8a57df8a2.h5ad
+# wget https://datasets.cellxgene.cziscience.com/cc9bfb86-96ed-4ecd-bcc9-464120fc8628.h5ad
+# wget https://datasets.cellxgene.cziscience.com/f86dbeff-36bf-4036-a828-c2c43b052cf2.rds
+```
+
+# Load external reference dataset
+```{r Function to format count assay}
+## function to be used when data assay contains raw counts. This replaces the
+## information into counts assay, and normalises counts for the data assay.
+## There's also an option to replace gene symbols as matrix rownames.
+formatassay <- function(obj) {
+  # extract data from seurat object
+  assay <- obj[['RNA']]@data
+
+  # gene information (rows)
+  metafeature <- obj[['RNA']]@meta.features
+  metafeature$ensembl_id <- row.names(metafeature)
+  head(metafeature)
+
+  # Option to switch ENSEMBL IDs to gene symbols
+  #   # where gene names repeat in a column, and you want to add a unique number to the end of each gene name
+  #   metafeature$Gene <- as.character(metafeature$Gene)
+  #   metafeature$Gene <- ave(metafeature$Gene, metafeature$Gene, FUN = function(x) {
+  #     if(length(x) > 1) {
+  #       letters_combinations <- c(letters, sapply(letters, function(l1) paste0(letters, l1)))
+  #       suffix <- letters_combinations[seq_along(x)]
+  #       paste0(x, "_", suffix)
+  #     } else {
+  #       x
+  #     }
+  #   })
+  #
+  # rownames(metafeature) <- metafeature$Gene
+  # rownames(assay) <- metafeature$Gene
+
+  # cell information (columns)
+  metadata <- obj@meta.data
+  # dimensionality reductions
+  red_umap <- obj$UMAP
+  red_tsne <- obj$tSNE
+  # create new object
+  newobj <- CreateSeuratObject(counts = assay, meta.data = metadata)
+  # stilobj[["RNA"]]@meta.features <- metafeature # ‘meta.features’ is not a slot in class “Assay5”
+  newobj$UMAP <- red_umap
+  newobj$tSNE <- red_tsne
+  # normalize counts by cell (scale factor from total reads per cell)
+  newobj <- NormalizeData(newobj)
+  # rename
+  obj <- newobj
+  # check
+  obj
+  head(rownames(obj))
+  # drop large unused objects
+  newobj <- NULL
+  assay <- NULL
+
+  return(obj)
+}
+```
+
+
+```{r Create reference RDS object}
+### Create reference object with ENSEMBL IDs as rownames
+
+# open h5ad files using BPCells (for large files)
+file.dir <- paste0(workdir, "/ref_siletti/")
+files.set <- c("b9171f05-8112-4a55-95f2-4cf8a57df8a2.h5ad","cc9bfb86-96ed-4ecd-bcc9-464120fc8628.h5ad") # Non-neurons, Neurons
+
+# Loop through (2) h5ad files and output BPCells matrices on-disk
+data.list <- c()
+metadata.list <- c()
+for (i in 1:length(files.set)) {
+  path <- paste0(file.dir, files.set[i])
+  data <- BPCells::open_matrix_anndata_hdf5(path, group = "X")
+   write_matrix_dir(
+     mat = data,
+     dir = paste0(gsub(".h5ad", "", path), "_BP")
+   )
+  # Load in BP matrices
+  mat <- open_matrix_dir(dir = paste0(gsub(".h5ad", "", path), "_BP"))
+  # Get metadata
+  metadata.list[[i]] <- LoadH5ADobs(path = path)
+  data.list[[i]] <- mat
+}
+# Name layers
+names(data.list) <- c("nonneuron", "neuron")
+
+# check metadata columns
+colnames(metadata.list[[i]])
+# Add Metadata
+metadata.list <- lapply(metadata.list, function(x) {
+  x <- x[, c("CellID", "cell_cycle_score", "cell_type", "cluster_id", "development_stage",
+             "disease","donor_id","fraction_mitochondrial", "fraction_unspliced" ,
+            "sample_id","self_reported_ethnicity", "sex", "supercluster_term",
+            "total_UMIs", "total_genes")]
+  return(x)
+})
+metadata <- Reduce(rbind, metadata.list)
+
+# create seurat object for both datasets
+merged.object <- CreateSeuratObject(counts = data.list, meta.data = metadata) # 59236 features across 3369219 samples within 1 assay
+# save object
+saveRDS(
+  object = merged.object,
+  file = paste0(workdir, "/ref_siletti/ref_siletti_neuron_nonneuron_seurat_supercluster_term_ensembl.Rds")
+)
+# drop
+merged.object<-NULL
+```
+
+
+# Human astrocyte subtype marker gene enrichment
+## Load data
+```{r load seurat object}
+# load RDS data file
+file="f86dbeff-36bf-4036-a828-c2c43b052cf2.rds"       # ref_siletti_neuron_nonneuron_seurat_supercluster_term_ensembl.Rds OR 
+                                                      # "f86dbeff-36bf-4036-a828-c2c43b052cf2.rds" (all neurons + non-neurons, or astrocytes only)
+seu <- readRDS(paste0(workdir, "/ref_siletti/",file))
+seu
+```
+
+```{r}
+# format data
+seu <- formatassay(seu)
+seu
+```
+
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=4.5, fig.height=2.25}
+seu <- SetIdent(seu, value = "cluster_id")
+# count cells per cluster
+cellcount <- data.frame(table(Idents(seu)))
+ggplot(cellcount, aes(x=Var1, y=Freq)) + geom_bar( stat="identity") + 
+  theme_bw() + ylab("Cell counts") + xlab("Cluster")
+# ggsave(file=paste0(workdir,"/ref_stiletti/plots/astrocyte_supercluster_cellcounts_cluster_id.svg"), width=7.5, height=3.5)
+```
+
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=4.5, fig.height=2.25}
+seu <- SetIdent(seu, value = "donor_id")
+# count cells per cluster
+cellcount <- data.frame(table(Idents(seu)))
+ggplot(cellcount, aes(x=Var1, y=Freq)) + geom_bar( stat="identity") + 
+  theme_bw() + ylab("Cell counts") + xlab("Donor")
+# ggsave(file=paste0(workdir,"/ref_stiletti/plots/astrocyte_supercluster_cellcounts_donor_id.svg"), width=7.5, height=3.5)
+
+```
+
+## Find marker genes
+
+```{r find subtype marker}
+# find upregulated markers for all astrocyte subtype clusters versus all other cell types
+seu <- SetIdent(seu, value = "cluster_id")
+seu.markers <- FindAllMarkers(seu, 
+                                  group.by = "cluster_id",
+                                  only.pos = TRUE, 
+                                  min.pct = 0.1, 
+                                  logfc.threshold = 0.25,
+                                  test.use = "wilcox")
+write.table(seu.markers, paste0(workdir,"/ref_siletti/stiletti_astrocyte_subcluster_singlecell_wilcox_minpct0.1_marker_genes.txt"))
+```
+
+View top 10 markers for each astrocyte subtype
+```{r}
+# view top 10 markers by subtype
+seu.markers %>% group_by(cluster) %>% slice_head(n=10)
+```
+
+```{r}
+# read in marker gene list
+stilSeu.markers <- read.table(paste0(workdir,"/ref_siletti/stiletti_astrocyte_subcluster_singlecell_wilcox_minpct0.1_marker_genes.txt")) 
+```
+
+Extract top 50 markers for each astrocyte subtype
+```{r}
+# filter by significance and sort by effect size, and subset to top N markers
+sN = 20
+stilSeu.markers <- stilSeu.markers %>%
+                  dplyr::filter(p_val_adj < 0.05) %>%
+                  group_by(cluster) %>%
+                  arrange(desc(abs(avg_log2FC))) %>% # abs() not needed since have selected only upregulated genes
+                  # arrange(p_val_adj) %>% # does not really work when so many p-values are 0s
+                  slice_head(n = sN) %>%
+                  ungroup()
+
+# check
+stilSeu.markers %>% group_by(cluster) %>% summarize(N=n())
+```
+
+Find marker genes among top bulk DEGs
+```{r}
+# load differentiated BMP4 and CNTF marker genes
+res.file <- paste0(workdir, "/analysed_data/differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+# Replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+    setNames(nm = dge_res_sheets$sheets)
+dgeBulk_sel <- dgeBulk[c("BMP4_diff_3w - progenitor|untreated",
+                         "CNTF_diff_3w - progenitor|untreated")]
+
+```
+
+```{r}
+# find common genes 
+# bN = 200
+bN = 500                                   # edit to test different number of differential genes from bulk RNA dataset
+outs_l <- list()
+for (i in 1:length(dgeBulk_sel)) {
+  
+  bulkRNA = dgeBulk_sel[[i]]
+  bulkMark <- bulkRNA %>% 
+    filter(!(sig=="NS")) %>% 
+    filter(!(class=="Down*")) %>%           # only upregulated marker genes
+    arrange(desc(abs(log2FoldChange))) %>% 
+    slice_head(n = bN)                      
+  outdf <- merge(bulkMark, stilSeu.markers, by.x="id", by.y="gene")
+  outdf$Comparison <- names(dgeBulk_sel)[i]
+  outs_l <- c(outs_l, list(outdf))
+}
+names(outs_l)<-names(dgeBulk_sel)
+outs_df <- do.call("rbind",outs_l)
+outs_df
+
+outs_df %>% group_by(cluster) %>% slice_head(n=10)
+```
+
+Number of overlapping marker genes by astrocyte differentiation
+```{r}
+# add number of used cluster marker genes 
+if (is.null( outs_df$top.prop)  ) 
+{outs_df$top.prop <- sN}
+
+# number of overlapping marker genes by astrocyte differentiation
+ol_count <- data.frame(table(outs_df$Comparison))
+colnames(ol_count) <- c("Comparison","OLCount")
+# ol_count$scProp <- ol_count$OLCount / sN
+# ol_count$bProp <- ol_count$OLCount / bN
+ol_count
+```
+
+Number of overlapping genes by cluster
+```{r}
+# get number of overlapping genes by cluster
+cluster_ol_gene_count <- outs_df %>% 
+  group_by(Comparison, cluster) %>% 
+  summarise(N.overlap=n()) %>% 
+  as.data.frame()
+# add number of cluster marker genes tested for overlap (top.prop)
+cluster_ol_gene_count <- merge(cluster_ol_gene_count, unique(outs_df[,c("Comparison","cluster","top.prop")]), by = c("Comparison","cluster"))
+cluster_ol_gene_count$GeneRatio <- cluster_ol_gene_count$N.overlap / cluster_ol_gene_count$top.prop
+```
+
+```{r}
+# apply hypergeometric test for overlap
+backpop = 18372               # total N genes
+outdf = data.frame()
+for (i in 1:nrow(cluster_ol_gene_count)) {
+  test_row = cluster_ol_gene_count[i,]
+  clustermark = test_row$top.prop
+  overlap = test_row$N.overlap
+  
+  signature_l = c(bN,bN)    # N genes limited by bN threshold
+  # signature_l = c(3290,3278)  # N significant bulk DEGs
+  signature = ifelse(test_row$Comparison == "BMP4_diff_3w - progenitor|untreated", signature_l[1], signature_l[2])
+  
+  pval = phyper(q=overlap-1,            # number of overlapping genes - 1
+                m=clustermark,          # number of cluster marker genes
+                n=backpop-clustermark,  # number of genes tested - overlapping genes
+                k=signature,            # number of differentiated astrocyte DEGs
+                lower.tail=FALSE)       # compute P( X > overlap ), hence the '-1' above
+  out <- data.frame(test_row, pval=pval)
+  outdf <- rbind(outdf, out)
+}
+
+# apply multiple testing correction
+outdf$p.adjust <- p.adjust(outdf$pval, method = "fdr")
+```
+
+```{r}
+outdf
+```
+
+```{r, fig.height=5, fig.width=10}
+# rename clusters
+outdf$cluster <- paste0("Astro_",outdf$cluster)
+
+# rename comparisons
+outdf[outdf$Comparison == c("BMP4_diff_3w - progenitor|untreated"),]$Comparison <- "3w BMP4\nastrocyte"
+outdf[outdf$Comparison == c("CNTF_diff_3w - progenitor|untreated"),]$Comparison <- "3w CNTF\nastrocyte"
+
+# plot counts
+outdf$cluster <- as.factor(outdf$cluster)
+ggplot(outdf, aes(x=cluster, y=N.overlap, fill=Comparison, label = ifelse(p.adjust < 0.05, 
+               paste0("p = ",formatC(p.adjust, format = "e", digits = 2)), 
+               ""))) +
+  geom_text(position=position_dodge(width = 0.9), vjust = -0.5, size=3) +
+  geom_bar(position = "dodge", stat="identity") + 
+  theme_bw() +
+  ggtitle("Common Human Brain Atlas astrocyte subcluster and differentiated astrocyte marker genes")
+# ggsave(file=paste0(workdir,"/ref_stiletti/plots/barplot_bmp4_cntf_v_progenitor_upregulated.svg"), width=16, height=5)
+
+# plot gene ratios
+outdf$cluster <- as.factor(outdf$cluster)
+ggplot(outdf, aes(x=cluster, y=GeneRatio, fill=Comparison, label = ifelse(p.adjust < 0.05, 
+               paste0("p = ",formatC(p.adjust, format = "e", digits = 2)), 
+               ""))) +
+  geom_text(position=position_dodge(width = 0.9), vjust = -0.5, size=3) +
+  geom_bar(position = "dodge", stat="identity") + 
+  theme_bw() +
+  ggtitle("Common Human Brain Atlas astrocyte subcluster and differentiated astrocyte marker genes")
+```
+
+```{r, fig.height=4, fig.width=8}
+# Plot heamap of ratios
+ggplot(outdf, aes(cluster, Comparison, fill= GeneRatio)) + 
+  geom_tile() +
+  scale_fill_gradient(low="white", high="darkgreen") +
+  # geom_text(aes(label = ifelse(p.adjust < 0.05, 
+  #                              paste0("p = ",formatC(p.adjust, format = "e", digits = 2)), 
+  #                              "")), size=2.5)
+  geom_text(aes(label = ifelse( p.adjust < 0.0005, "***",
+                                ifelse(p.adjust < 0.05, "**", 
+                                       ifelse(p.adjust < 0.1, "*","")))), size=5) +
+  theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) 
+  
+# ggsave(file=paste0(dir,"/ref_stiletti/plots/heatmap_bmp4_cntf_siletti_subcluster_marker_enrich.svg"), width=16, height=5)
+# ggsave(file=paste0(dir,"/ref_stiletti/plots/heatmap_bmp4_cntf_siletti_subcluster_marker_enrich.png"), width=9, height=3)
+
+```
+
