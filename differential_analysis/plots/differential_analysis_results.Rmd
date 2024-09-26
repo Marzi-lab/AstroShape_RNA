@@ -1,0 +1,292 @@
+---
+title: "Differential Analysis Results"
+author: "Paulina Urbanaviciute"
+date: "2024-04-03"
+output:
+  rmarkdown::html_document:
+    theme: default
+    highlight: tango
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    number_sections: no
+    self_contained: yes
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(purrr)
+library(stringr)
+library(ComplexHeatmap)
+library(clusterProfiler)
+library(enrichplot)
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+
+# set working directory
+workdir="/home/pu1918/RDS/user/pu1918/ephemeral/AS_astrocytes"
+# set seed
+set.seed(123)
+```
+
+
+# Volcano plot
+
+Visualising the effect sizes and significance for differential gene expression in differentiated and treated astrocytes.
+
+## file differential_analysis_BMP4_CNTF
+```{r}
+# load de outputs
+res.file<-paste0(workdir, "/analysed_data/differential_analysis_BMP4_CNTF.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+
+# replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+    setNames(nm = dge_res_sheets$sheets)
+# dgeBulk_sel <- dgeBulk[c("BMP4_diff_3w - progenitor|untreated",
+#                          "CNTF_diff_3w - progenitor|untreated")]
+dgeBulk_sel <- dgeBulk[c(dge_res_sheets_key$Comparison)]
+
+```
+
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=3.5, fig.height=2.5}
+
+# create function for plot
+plot_volcano <- function(i) {
+  
+    # select relevant comparison
+    de = dgeBulk_sel[[i]]
+    name=names(dgeBulk_sel)[i]
+    # print(name)
+    
+    # ensure empty gene symbols are replaced with ensembl IDs
+    de[is.na(de$symbol),]$symbol <- de[is.na(de$symbol),]$id
+
+    # add a column of NAs
+    de$diffexpressed <- NA
+    # if log2Foldchange > 0.0 and pvalue < 0.05, set as "UP" 
+    de$diffexpressed[de$log2FoldChange > 0.0 & de$pvalue < 0.05] <- "UP"
+    # if log2Foldchange < -0.0 and pvalue < 0.05, set as "DOWN"
+    de$diffexpressed[de$log2FoldChange < -0.0 & de$pvalue < 0.05] <- "DOWN"
+    de$delabel <- NA
+    
+    # label all up and downregulated genes
+    # de[!(is.na(de$diffexpressed)),]$delabel <-  de[!(is.na(de$diffexpressed)),]$symbol
+    
+    # label top up and downregulated genes
+    # largest -log10(p-value)
+    lowN = c("BMP4_diff_3w - BMP4_diff_2w|untreated" , "CNTF_diff_3w - CNTF_diff_2w|untreated")
+    highN = dge_res_sheets_key$Comparison[-c(3,10)]
+    if (name %in%  lowN) {
+        N = 5 # number of genes - will depend on the number of significant gene distribution for the DE comparison
+    } else {N = 10}
+    
+    sym = de[head(order(abs(-log10(de$pvalue)), decreasing = TRUE),N),]$symbol 
+    de[head(order(abs(-log10(de$pvalue)), decreasing = TRUE),N),]$delabel <- paste0("italic('",sym,"')" )
+    # largest log2(FC), also significant
+    sigde <- de %>% dplyr::filter(pvalue < 0.05)
+    labelid <- sigde[head(order(abs(sigde$log2FoldChange), decreasing = TRUE),7),]$id
+    
+    sym =  de[de$id %in% labelid,]$symbol
+    de[de$id %in% labelid,]$delabel <- paste0("italic('",sym,"')" )
+    
+    xlim = max(abs(de$log2FoldChange))+(max(abs(de$log2FoldChange))*0.3)
+    ylim =  max(-log10(de$pvalue))+(max(-log10(de$pvalue))*1)
+    
+    uplabel = de %>% filter(is.na(delabel)==FALSE) %>% dplyr::filter(diffexpressed=="UP") 
+    dwlabel = de %>% filter(is.na(delabel)==FALSE) %>% dplyr::filter(diffexpressed=="DOWN") 
+
+    
+    vol_plot <- ggplot(data=de, aes(x=log2FoldChange, y=-log10(pvalue), col=diffexpressed, label=delabel)) +
+            geom_point(size = 1, alpha = 0.5) + 
+            scale_x_continuous(expand = c(0, 0), limits=c(-xlim,xlim)) +
+            scale_y_continuous(expand = c(0, 0), limits=c(0,ylim)) +
+            theme_classic(base_size=18) +
+            
+      geom_label_repel(
+                    data = dwlabel,
+                    aes(label = delabel),
+                     size=6,
+                     min.segment.length = unit(0.5, 'lines'), 
+                     nudge_y = 5.9,
+                     # nudge_x = 7.9,
+                     xlim = c(NA, -1),
+                     max.overlaps=Inf,
+                     parse = TRUE,
+                    seed = 1) +
+      
+      geom_label_repel(
+                    data = uplabel,
+                    aes(label = delabel),
+                     size=6,
+                     min.segment.length = unit(0.5, 'lines'),
+                     nudge_y = 5.9,
+                     # nudge_x = 7.9,
+                     xlim = c(1, NA),
+                     max.overlaps=Inf,
+                     parse = TRUE,
+                     seed = 1) +
+      
+            scale_color_manual(values=c("#788feb", "#942025", "black")) +
+            # geom_vline(xintercept=c(-0.6, 0.6), col="black") +
+            geom_hline(yintercept=-log10(0.05), col="black", linetype = 2) + 
+            ggtitle(name) +
+            theme(plot.title = element_text(hjust = 0.5, size=18),
+                  legend.position = "none")
+    
+    ggsave(file=paste0(workdir,"/volcano_plot/volcano_",name,".svg"), plot=vol_plot, width=6.5, height=6.5)
+    
+    return(vol_plot)
+    
+    ## extra: for gene-term plot querying
+    # de_genes <- de[!is.na(de$delabel),]$delabel
+  }
+
+```
+
+```{r, message=FALSE, warning=TRUE, fig.height=10, fig.width=10}
+# apply function to all comparisons
+lapply(1:length(dgeBulk_sel), plot_volcano)
+```
+
+```{r, fig.height=10, fig.width=10}
+# apply function to select comparison
+i=3
+lapply(i, plot_volcano)
+```
+
+## file differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx
+```{r}
+# load differentiated BMP4 and CNTF marker genes
+res.file<-paste0(workdir, "/analysed_data/differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+
+# replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+    setNames(nm = dge_res_sheets$sheets)
+# dgeBulk_sel <- dgeBulk[c("BMP4_diff_3w - progenitor|untreated",
+#                          "CNTF_diff_3w - progenitor|untreated")]
+dgeBulk_sel <- dgeBulk[c(dge_res_sheets_key$Comparison)]
+```
+
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=3.5, fig.height=2.5}
+
+# create function for plot
+plot_volcano <- function(i) {
+  
+    # select relevant comparison
+    de = dgeBulk_sel[[i]]
+    name=names(dgeBulk_sel)[i]
+    # print(name)
+    
+    # ensure empty gene symbols are replaced with ensembl IDs
+    de[is.na(de$symbol),]$symbol <- de[is.na(de$symbol),]$id
+
+    # add a column of NAs
+    de$diffexpressed <- NA
+    # if log2Foldchange > 0.0 and pvalue < 0.05, set as "UP" 
+    de$diffexpressed[de$log2FoldChange > 0.0 & de$pvalue < 0.05] <- "UP"
+    # if log2Foldchange < -0.0 and pvalue < 0.05, set as "DOWN"
+    de$diffexpressed[de$log2FoldChange < -0.0 & de$pvalue < 0.05] <- "DOWN"
+    de$delabel <- NA
+    
+    # label all up and downregulated genes
+    # de[!(is.na(de$diffexpressed)),]$delabel <-  de[!(is.na(de$diffexpressed)),]$symbol
+    
+    # label top up and downregulated genes
+    # largest -log10(p-value)
+    lowN = c("BMP4_diff_3w - BMP4_diff_2w|untreated" , "CNTF_diff_3w - CNTF_diff_2w|untreated")
+    highN = dge_res_sheets_key$Comparison[-c(3,10)]
+    if (name %in%  lowN) {
+        N = 5 # number of genes - will depend on the number of significant gene distribution for the DE comparison
+    } else {N = 10}
+    
+    sym = de[head(order(abs(-log10(de$pvalue)), decreasing = TRUE),N),]$symbol 
+    de[head(order(abs(-log10(de$pvalue)), decreasing = TRUE),N),]$delabel <- paste0("italic('",sym,"')" )
+    
+    # largest log2(FC), also significant
+    sigde <- de %>% dplyr::filter(pvalue < 0.05)
+    labelid <- sigde[head(order(abs(sigde$log2FoldChange), decreasing = TRUE),7),]$id
+    sym =  de[de$id %in% labelid,]$symbol
+    de[de$id %in% labelid,]$delabel <- paste0("italic('",sym,"')" )
+    
+    xlim = max(abs(de$log2FoldChange))+(max(abs(de$log2FoldChange))*0.3)
+    ylim = max(-log10(de$pvalue))+(max(-log10(de$pvalue))*0.5)
+    ynud = 
+    
+    uplabel = de %>% filter(is.na(delabel)==FALSE) %>% dplyr::filter(diffexpressed=="UP") 
+    dwlabel = de %>% filter(is.na(delabel)==FALSE) %>% dplyr::filter(diffexpressed=="DOWN") 
+
+    
+    vol_plot <- ggplot(data=de, aes(x=log2FoldChange, y=-log10(pvalue), col=diffexpressed, label=delabel)) +
+            geom_point(size = 1, alpha = 0.5) + 
+            scale_x_continuous(expand = c(0, 0), limits=c(-xlim,xlim)) +
+            scale_y_continuous(expand = c(0, 0), limits=c(0,ylim)) +
+            theme_classic(base_size=18) +
+            
+      geom_label_repel(
+                    data = dwlabel,
+                    aes(label = delabel),
+                     size=6,
+                     min.segment.length = unit(0.5, 'lines'), 
+                     nudge_y = 5.9,
+                     # nudge_x = 7.9,
+                     xlim = c(NA, -1),
+                     max.overlaps=Inf,
+                     parse = TRUE,
+                    seed = 1) +
+      
+      geom_label_repel(
+                    data = uplabel,
+                    aes(label = delabel),
+                     size=6,
+                     min.segment.length = unit(0.5, 'lines'), 
+                     nudge_y = 5.9,
+                     # nudge_x = 7.9,
+                     xlim = c(1, NA),
+                     max.overlaps=Inf,
+                     parse = TRUE,
+                     seed = 1) +
+      
+            scale_color_manual(values=c("#788feb", "#942025", "black")) +
+            # geom_vline(xintercept=c(-0.6, 0.6), col="black") +
+            geom_hline(yintercept=-log10(0.05), col="black", linetype = 2) + 
+            ggtitle(name) +
+            theme(plot.title = element_text(hjust = 0.5, size=18),
+                  legend.position = "none")
+    
+    # ggsave(file=paste0(workdir,"/volcano_plot/volcano_",name,".svg"), plot=vol_plot, width=5.5, height=5.5)
+    
+    return(vol_plot)
+    
+    ## extra: for gene-term plot querying
+    # de_genes <- de[!is.na(de$delabel),]$delabel
+  }
+
+```
+
+```{r, message=FALSE, warning=FALSE, fig.height=10, fig.width=10}
+# apply function to all comparisons
+lapply(1:length(dgeBulk_sel), plot_volcano)
+```
+
+```{r, fig.height=10, fig.width=10}
+# apply function to select comparison
+i=3
+lapply(i, plot_volcano)
+
+```
