@@ -12,7 +12,7 @@ Astrocytes were differentiated from human induced pluripotent stem cells (iPSCs)
 
 
 ## In this repository
-Here, we provide scripts to reproduce the figures based on the RNA-seq gene expression data in the manuscript **‘Generation of morphologically distinct astrocyte subtypes from human iPSCs reveals a link between glial shape, function and reactivity’** by K O’Toole & L Guetta, P Urbanaviciute, P Suklai, (POSTDOC IN LIDDELOW LAB), S Liddelow, R Louisier, S Marzi, A Serio.
+Here, we provide scripts to reproduce the figures based on the RNA-seq gene expression data in the manuscript **‘Generation of morphologically distinct astrocyte subtypes from human iPSCs reveals a link between glial shape, function and reactivity’** by K O’Toole & L Guetta, P Urbanaviciute, P Suklai, C Wright, T Fisher, S Liddelow, R Louisier, SJ Marzi, A Serio.
 
 ### Contents:
 * differential_analysis: gene expression counts, differential analysis and pathway analysis outputs.
