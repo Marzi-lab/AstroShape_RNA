@@ -13,7 +13,7 @@ output:
       smooth_scroll: yes
     number_sections: no
     self_contained: yes
-    df_print: paged
+    df_print: "paged"
 ---
 
 ```{r setup, include=FALSE}
@@ -26,18 +26,21 @@ library(enrichplot)
 library(ggplot2)
 library(dplyr)
 library(ggrepel)
+library(ggvenn)
+library(RColorBrewer)
+library(knitr)
 
 # set working directory
-workdir="/home/pu1918/RDS/user/pu1918/ephemeral/AS_astrocytes"
+workdir="/Volumes/pu1918/ephemeral/AS_astrocytes"
 # set seed
 set.seed(123)
 ```
 
 
-# Gene lists
+# Gene lists {.tabset} 
 View results table from gene differential analysis.
 
-## differential_analysis_BMP4_CNTF {.tabset} 
+differential_analysis_BMP4_CNTF
 ```{r}
 # load de outputs
 res.file<-paste0(workdir, "/analysed_data/differential_analysis_BMP4_CNTF.xlsx")
@@ -71,49 +74,63 @@ for (i in 1:length(dgeBulk_sel)) {
 ```
 
 
-```{r, results='asis'}
+## BMP4_diff_3w - progenitor|untreated
+```{r}
+i=2 # "BMP4_diff_3w - progenitor|untreated"
+df = deTopList[[i]]
 
-names(deTopList) <- names(dgeBulk_sel)
+print(names(deTopList[i]))
+data.frame(df)
+```
+## CNTF_diff_3w - progenitor|untreated
+```{r}
+i=6 # "CNTF_diff_3w - progenitor|untreated"
+df = deTopList[[i]]
 
-for (i in 1:length(deTopList)) {
-  
-    name = names(deTopList)[[i]]
-    cat('\n')
-    cat('### ', name, '  \n')
-    cat('\n')
-
-  data.frame(deTopList[[i]])
-  
-  cat('\n')
-}
-
+print(names(deTopList[i]))
+data.frame(df)
 ```
 
-
-
+# Gene counts {.tabset} 
 ```{r}
-# countSig <- function(i) { 
-#     # select item from list
-#     de = dgeBulk_sel[[i]]
-#     name=names(dgeBulk_sel)[i]
-#     
-#     # count significant up and down DEGs
-#     deCount = de %>% filter(sig=="<= 0.05") %>% group_by(class) %>% summarise(count=n())
-#     
-#     return(deCount)
-#   }
+countSig <- function(i) {
+    # select item from list
+    de = dgeBulk_sel[[i]]
+    name=names(dgeBulk_sel)[i]
+
+    # count significant up and down DEGs
+    deCount = de %>% filter(sig=="<= 0.05") %>% group_by(class) %>% summarise(count=n())
+
+    return(deCount)
+}
+
+# apply function to list of comparisons
+clist = 1:length(dgeBulk_sel)
+outs = lapply(clist, countSig)
+names(outs) <- names(dgeBulk_sel)
 ```
 
 View counts of significant differential analysis hits.
 
 ```{r, message=FALSE, warning=TRUE, fig.height=10, fig.width=10, echo=FALSE, results='asis',fig.keep='all'}
-# # apply function to list of comparisons
-# clist = 1:length(dgeBulk_sel)
-# names(dgeBulk_sel)
-# lapply(clist, countSig)
+
+plotl=outs
+
+for (i in 1:length(dgeBulk_sel)) {
+
+    name = names(dgeBulk_sel)[[i]]
+    cat('\n')
+    cat('## ', name, '   \n')
+    cat('\n')
+
+    data.frame(plotl[[i]])
+
+    cat('\n')
+
+}
 ```
 
-## differential_analysis_wo2W_BMP4_CNTF_wo2W
+differential_analysis_wo2W_BMP4_CNTF_wo2W 
 ```{r}
 # # load differentiated BMP4 and CNTF marker genes
 # res.file<-paste0(workdir, "/analysed_data/differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx")
@@ -166,11 +183,12 @@ View counts of significant differential analysis hits.
 ```
 
 
-# Volcano plot
+
+# Volcano plot: |logFC|>0  {.tabset} 
 
 Visualising the effect sizes and significance for differential gene expression in differentiated and treated astrocytes.
+file: differential_analysis_BMP4_CNTF
 
-## differential_analysis_BMP4_CNTF {.tabset} 
 ```{r}
 # load de outputs
 res.file<-paste0(workdir, "/analysed_data/differential_analysis_BMP4_CNTF.xlsx")
@@ -191,7 +209,8 @@ dgeBulk_sel <- dgeBulk[c(dge_res_sheets_key$Comparison)]
 dgeBulk_sel = dgeBulk_sel[-c(6,8,14)]
 ```
 
-``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=3.5, fig.height=2.5}
+
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=3.5, fig.height=2.5, results='asis',fig.keep='all'}
 
 plotl <- c()
 for (i in 1:length(dgeBulk_sel)) {
@@ -233,7 +252,245 @@ for (i in 1:length(dgeBulk_sel)) {
     de[de$id %in% labelid,]$delabel <- paste0("italic('",sym,"')" )
     
     xlim = max(abs(de$log2FoldChange))+(max(abs(de$log2FoldChange))*0.3)
-    ylim =  max(-log10(de$pvalue))+(max(-log10(de$pvalue))*1)
+    ylim =  max(-log10(de$pvalue))+(max(-log10(de$pvalue))*0.2)
+    
+    uplabel = de %>% filter(is.na(delabel)==FALSE) %>% dplyr::filter(diffexpressed=="UP") 
+    dwlabel = de %>% filter(is.na(delabel)==FALSE) %>% dplyr::filter(diffexpressed=="DOWN") 
+
+    
+    vol_plot <- ggplot(data=de, aes(x=log2FoldChange, y=-log10(pvalue), col=diffexpressed, label=delabel)) +
+            geom_point(size = 1, alpha = 0.5) + 
+            scale_x_continuous(expand = c(0, 0), limits=c(-xlim,xlim)) +
+            scale_y_continuous(expand = c(0, 0), limits=c(0,ylim)) +
+            theme_classic(base_size=18) +
+            
+      geom_label_repel(
+                    data = dwlabel,
+                    aes(label = delabel),
+                     size=6,
+                     min.segment.length = unit(0.5, 'lines'), 
+                     nudge_y = 5.9,
+                     # nudge_x = 7.9,
+                     xlim = c(NA, -1),
+                     max.overlaps=Inf,
+                     parse = TRUE,
+                    seed = 1) +
+      
+      geom_label_repel(
+                    data = uplabel,
+                    aes(label = delabel),
+                     size=6,
+                     min.segment.length = unit(0.5, 'lines'),
+                     nudge_y = 5.9,
+                     # nudge_x = 7.9,
+                     xlim = c(1, NA),
+                     max.overlaps=Inf,
+                     parse = TRUE,
+                     seed = 1) +
+      
+            scale_color_manual(values=c("#788feb", "#942025", "black")) +
+            # geom_vline(xintercept=c(-0.6, 0.6), col="black") +
+            geom_hline(yintercept=-log10(0.05), col="black", linetype = 2) + 
+            ggtitle(name) +
+            theme(plot.title = element_text(hjust = 0.5, size=18),
+                  legend.position = "none")
+    
+    # ggsave(file=paste0(workdir,"/volcano_plot/volcano_",name,".svg"), plot=vol_plot, width=6.5, height=6.5)
+    
+    plotl <- c(plotl, list(vol_plot))
+    
+    ## extra: for gene-term plot querying
+    # de_genes <- de[!is.na(de$delabel),]$delabel
+  }
+
+```
+
+```{r, message=FALSE, warning=TRUE, fig.height=10, fig.width=10, echo=FALSE, results='asis',fig.keep='all'}
+
+# names(plotl) <- names(dgeBulk_sel)
+# for (i in 1:length(plotl)) {
+#   print(plotl[[i]])
+# }
+
+for (i in 1:length(dgeBulk_sel)) {
+
+    name = names(dgeBulk_sel)[[i]]
+    cat('\n')
+    cat('## ', name, '   \n')
+    cat('\n')
+
+    print(plotl[[i]])
+
+    cat('\n')
+
+}
+
+```
+
+# Volcano plot: |logFC|>0.5  {.tabset} 
+
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=3.5, fig.height=2.5, results='asis',fig.keep='all'}
+
+plotl <- c()
+for (i in 1:length(dgeBulk_sel)) {
+  
+    # select relevant comparison
+    de = dgeBulk_sel[[i]]
+    name=names(dgeBulk_sel)[i]
+    # print(name)
+    
+    # ensure empty gene symbols are replaced with ensembl IDs
+    de[is.na(de$symbol),]$symbol <- de[is.na(de$symbol),]$id
+
+    # add a column of NAs
+    de$diffexpressed <- NA
+    # if log2Foldchange > 0.0 and pvalue < 0.05, set as "UP" 
+    de$diffexpressed[de$log2FoldChange > 0.5 & de$pvalue < 0.05] <- "UP"
+    # if log2Foldchange < -0.0 and pvalue < 0.05, set as "DOWN"
+    de$diffexpressed[de$log2FoldChange < -0.5 & de$pvalue < 0.05] <- "DOWN"
+    de$delabel <- NA
+    
+    # label all up and downregulated genes
+    # de[!(is.na(de$diffexpressed)),]$delabel <-  de[!(is.na(de$diffexpressed)),]$symbol
+    
+    # label top up and downregulated genes
+    # largest -log10(p-value)
+    lowN = c("BMP4_diff_3w - BMP4_diff_2w|untreated" , "CNTF_diff_3w - CNTF_diff_2w|untreated")
+    highN = dge_res_sheets_key$Comparison[-c(3,10)]
+    if (name %in%  lowN) {
+        N = 5 # number of genes - will depend on the number of significant gene distribution for the DE comparison
+    } else {N = 10}
+    
+    sym = de[head(order(abs(-log10(de$pvalue)), decreasing = TRUE),N),]$symbol 
+    de[head(order(abs(-log10(de$pvalue)), decreasing = TRUE),N),]$delabel <- paste0("italic('",sym,"')" )
+    # largest log2(FC), also significant
+    sigde <- de %>% dplyr::filter(pvalue < 0.05)
+    labelid <- sigde[head(order(abs(sigde$log2FoldChange), decreasing = TRUE),7),]$id
+    
+    sym =  de[de$id %in% labelid,]$symbol
+    de[de$id %in% labelid,]$delabel <- paste0("italic('",sym,"')" )
+    
+    xlim = max(abs(de$log2FoldChange))+(max(abs(de$log2FoldChange))*0.3)
+    ylim =  max(-log10(de$pvalue))+(max(-log10(de$pvalue))*0.2)
+    
+    uplabel = de %>% filter(is.na(delabel)==FALSE) %>% dplyr::filter(diffexpressed=="UP") 
+    dwlabel = de %>% filter(is.na(delabel)==FALSE) %>% dplyr::filter(diffexpressed=="DOWN") 
+
+    
+    vol_plot <- ggplot(data=de, aes(x=log2FoldChange, y=-log10(pvalue), col=diffexpressed, label=delabel)) +
+            geom_point(size = 1, alpha = 0.5) + 
+            scale_x_continuous(expand = c(0, 0), limits=c(-xlim,xlim)) +
+            scale_y_continuous(expand = c(0, 0), limits=c(0,ylim)) +
+            theme_classic(base_size=18) +
+            
+      geom_label_repel(
+                    data = dwlabel,
+                    aes(label = delabel),
+                     size=6,
+                     min.segment.length = unit(0.5, 'lines'), 
+                     nudge_y = 5.9,
+                     # nudge_x = 7.9,
+                     xlim = c(NA, -1),
+                     max.overlaps=Inf,
+                     parse = TRUE,
+                    seed = 1) +
+      
+      geom_label_repel(
+                    data = uplabel,
+                    aes(label = delabel),
+                     size=6,
+                     min.segment.length = unit(0.5, 'lines'),
+                     nudge_y = 5.9,
+                     # nudge_x = 7.9,
+                     xlim = c(1, NA),
+                     max.overlaps=Inf,
+                     parse = TRUE,
+                     seed = 1) +
+      
+            scale_color_manual(values=c("#788feb", "#942025", "black")) +
+            # geom_vline(xintercept=c(-0.6, 0.6), col="black") +
+            geom_hline(yintercept=-log10(0.05), col="black", linetype = 2) + 
+            ggtitle(name) +
+            theme(plot.title = element_text(hjust = 0.5, size=18),
+                  legend.position = "none")
+    
+    # ggsave(file=paste0(workdir,"/volcano_plot/volcano_",name,".svg"), plot=vol_plot, width=6.5, height=6.5)
+    
+    plotl <- c(plotl, list(vol_plot))
+    
+    ## extra: for gene-term plot querying
+    # de_genes <- de[!is.na(de$delabel),]$delabel
+  }
+
+```
+
+```{r, message=FALSE, warning=TRUE, fig.height=10, fig.width=10, echo=FALSE, results='asis',fig.keep='all'}
+
+# names(plotl) <- names(dgeBulk_sel)
+# for (i in 1:length(plotl)) {
+#   print(plotl[[i]])
+# }
+
+for (i in 1:length(dgeBulk_sel)) {
+
+    name = names(dgeBulk_sel)[[i]]
+    cat('\n')
+    cat('## ', name, '   \n')
+    cat('\n')
+
+    print(plotl[[i]])
+
+    cat('\n')
+
+}
+
+```
+
+# Volcano plot: |logFC|>1  {.tabset} 
+
+``` {r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=3.5, fig.height=2.5, results='asis',fig.keep='all'}
+
+plotl <- c()
+for (i in 1:length(dgeBulk_sel)) {
+  
+    # select relevant comparison
+    de = dgeBulk_sel[[i]]
+    name=names(dgeBulk_sel)[i]
+    # print(name)
+    
+    # ensure empty gene symbols are replaced with ensembl IDs
+    de[is.na(de$symbol),]$symbol <- de[is.na(de$symbol),]$id
+
+    # add a column of NAs
+    de$diffexpressed <- NA
+    # if log2Foldchange > 0.0 and pvalue < 0.05, set as "UP" 
+    de$diffexpressed[de$log2FoldChange > 1 & de$pvalue < 0.05] <- "UP"
+    # if log2Foldchange < -0.0 and pvalue < 0.05, set as "DOWN"
+    de$diffexpressed[de$log2FoldChange < -1 & de$pvalue < 0.05] <- "DOWN"
+    de$delabel <- NA
+    
+    # label all up and downregulated genes
+    # de[!(is.na(de$diffexpressed)),]$delabel <-  de[!(is.na(de$diffexpressed)),]$symbol
+    
+    # label top up and downregulated genes
+    # largest -log10(p-value)
+    lowN = c("BMP4_diff_3w - BMP4_diff_2w|untreated" , "CNTF_diff_3w - CNTF_diff_2w|untreated")
+    highN = dge_res_sheets_key$Comparison[-c(3,10)]
+    if (name %in%  lowN) {
+        N = 5 # number of genes - will depend on the number of significant gene distribution for the DE comparison
+    } else {N = 10}
+    
+    sym = de[head(order(abs(-log10(de$pvalue)), decreasing = TRUE),N),]$symbol 
+    de[head(order(abs(-log10(de$pvalue)), decreasing = TRUE),N),]$delabel <- paste0("italic('",sym,"')" )
+    # largest log2(FC), also significant
+    sigde <- de %>% dplyr::filter(pvalue < 0.05)
+    labelid <- sigde[head(order(abs(sigde$log2FoldChange), decreasing = TRUE),7),]$id
+    
+    sym =  de[de$id %in% labelid,]$symbol
+    de[de$id %in% labelid,]$delabel <- paste0("italic('",sym,"')" )
+    
+    xlim = max(abs(de$log2FoldChange))+(max(abs(de$log2FoldChange))*0.3)
+    ylim =  max(-log10(de$pvalue))+(max(-log10(de$pvalue))*0.2)
     
     uplabel = de %>% filter(is.na(delabel)==FALSE) %>% dplyr::filter(diffexpressed=="UP") 
     dwlabel = de %>% filter(is.na(delabel)==FALSE) %>% dplyr::filter(diffexpressed=="DOWN") 
@@ -297,7 +554,7 @@ for (i in 1:length(dgeBulk_sel)) {
 
     name = names(dgeBulk_sel)[[i]]
     cat('\n')
-    cat('### ', name, '   \n')
+    cat('## ', name, '   \n')
     cat('\n')
 
     print(plotl[[i]])
@@ -314,7 +571,8 @@ for (i in 1:length(dgeBulk_sel)) {
 # lapply(i, plot_volcano)
 ```
 
-## differential_analysis_wo2W_BMP4_CNTF_wo2W
+file: differential_analysis_wo2W_BMP4_CNTF_wo2W
+
 ```{r}
 # # load differentiated BMP4 and CNTF marker genes
 # res.file<-paste0(workdir, "/analysed_data/differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx")
@@ -442,6 +700,590 @@ for (i in 1:length(dgeBulk_sel)) {
 # lapply(i, plot_volcano)
 ```
 
-# Venn Diagrams
+# Venn Diagrams: |logFC|>0  
+file: differential_analysis_BMP4_CNTF 
+```{r}
+# load de outputs
+res.file<-paste0(workdir, "/analysed_data/differential_analysis_BMP4_CNTF.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+
+# replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+    setNames(nm = dge_res_sheets$sheets)
+dgeBulk_sel <- dgeBulk[c("BMP4_diff_3w - progenitor|untreated",
+                         "CNTF_diff_3w - progenitor|untreated",
+                         "treated - untreated|BMP4_diff_3w",
+                         "treated - untreated|CNTF_diff_3w")]
+
+
+select_gene <- function(df) {
+  upreg <- df %>% dplyr::filter(pvalue < 0.05) %>% dplyr::filter(log2FoldChange > 0) %>% pull(id)
+  downreg <- df %>% dplyr::filter(pvalue < 0.05) %>% dplyr::filter(log2FoldChange < 0) %>% pull(id)
+  outdf <- rbind(data.frame(Direction = "Up", id = upreg),
+                 data.frame(Direction = "Down", id = downreg))
+}
+select_gene_outs <- lapply(dgeBulk_sel, select_gene)
+
+##### Differentiated vs Progenitor ##### 
+# Upregulated
+# List of items
+first_up <- select_gene_outs[[1]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+second_up <- select_gene_outs[[2]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+name1 = paste0("BMP4 v progenitor \n (",first_up,")")
+name2 = paste0("CNTF v progenitor \n (",second_up,")")
+x <- list( list1 = select_gene_outs[[1]] %>% dplyr::filter(Direction == "Up") %>% pull(id), 
+          list2 = select_gene_outs[[2]] %>% dplyr::filter(Direction == "Up") %>% pull(id))
+names(x) <- c(name1, name2)
+# Plot Venn diagram
+p1 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p1, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_upregulated_scaled.svg"), width=12.5, height=12.5)
+p2 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p2, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_upregulated.svg"), width=10, height=12)
+
+# Downregulated
+# List of items
+first_down <- select_gene_outs[[1]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+second_down <- select_gene_outs[[2]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+name1 = paste0("BMP4 v progenitor \n (",first_down,")")
+name2 = paste0("CNTF v progenitor \n (",second_down,")")
+x <- list( list1 = select_gene_outs[[1]] %>% dplyr::filter(Direction == "Down") %>% pull(id), 
+          list2 = select_gene_outs[[2]] %>% dplyr::filter(Direction == "Down") %>% pull(id))
+names(x) <- c(name1, name2)
+
+# Plot Venn diagram
+p3 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p3, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_downregulated_scaled.svg"),  width=12.5, height=12.5)
+p4 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p4, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_downregulated.svg"), width=10, height=12)
+
+##### End of Differentiated vs Progenitor ##### 
+
+
+ 
+##### Treated vs Untreated ##### 
+# Upregulated
+# List of items
+first_up <- select_gene_outs[[3]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+second_up <- select_gene_outs[[4]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+name1 = paste0("treated v untreated BMP4 \n (",first_up,")")
+name2 = paste0("treated v untreated CNTF \n (",second_up,")")
+x <- list( list1 = select_gene_outs[[3]] %>% dplyr::filter(Direction == "Up") %>% pull(id), 
+            list2 = select_gene_outs[[4]] %>% dplyr::filter(Direction == "Up") %>% pull(id))
+names(x) <- c(name1, name2)
+# Plot Venn diagram
+p5 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p5, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_upregulated_scaled.svg"), width=12.5, height=12.5)
+p6 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p6, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_upregulated.svg"), width=10, height=12)
+
+ 
+# Downregulated
+# List of items
+first_down <- select_gene_outs[[3]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+second_down <- select_gene_outs[[4]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+name1 = paste0("treated v untreated BMP4 \n (",first_down,")")
+name2 = paste0("treated v untreated CNTF \n (",second_down,")")
+x <- list( list1 = select_gene_outs[[3]] %>% dplyr::filter(Direction == "Down") %>% pull(id), 
+            list2 = select_gene_outs[[4]] %>% dplyr::filter(Direction == "Down") %>% pull(id))
+names(x) <- c(name1, name2)
+# Plot Venn diagram
+p7 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p7, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_downregulated_scaled.svg"), width=12.5, height=12.5)
+p8 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p8, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_downregulated.svg"), width=10, height=12)
+
+##### End of Treated vs Untreated ##### 
+ 
+scplotl <- list(p1,p3,p5,p7) 
+nscplotl <- list(p2,p4,p6,p8) 
+
+```
+
+## scaled {.tabset} 
+```{r, message=FALSE, warning=TRUE, fig.height=20, fig.width=20, echo=FALSE, results='asis',fig.keep='all'}
+
+plotl = scplotl
+names=list("Upregulated Differentiated vs Progenitor", "Downregulated Differentiated vs Progenitor",
+        "Upregulated Treated vs Untreated", "Downregulated Treated vs Untreated")
+
+for (i in 1:length(names)) {
+
+    name = names[[i]]
+    cat('\n')
+    cat('### ', name, '   \n')
+    cat('\n')
+
+    print(plotl[[i]])
+
+    cat('\n')
+
+}
+
+```
+
+## non-scaled {.tabset} 
+```{r, message=FALSE, warning=TRUE, fig.height=20, fig.width=20, echo=FALSE, results='asis',fig.keep='all'}
+
+plotl = nscplotl
+names=list("Upregulated Differentiated vs Progenitor", "Downregulated Differentiated vs Progenitor",
+        "Upregulated Treated vs Untreated", "Downregulated Treated vs Untreated")
+
+for (i in 1:length(names)) {
+
+    name = names[[i]]
+    cat('\n')
+    cat('### ', name, '   \n')
+    cat('\n')
+
+    print(plotl[[i]])
+
+    cat('\n')
+
+}
+
+```
+
+# Venn Diagrams: |logFC|>0.5  
+file: differential_analysis_BMP4_CNTF 
+```{r}
+# load de outputs
+res.file<-paste0(workdir, "/analysed_data/differential_analysis_BMP4_CNTF.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+
+# replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+    setNames(nm = dge_res_sheets$sheets)
+dgeBulk_sel <- dgeBulk[c("BMP4_diff_3w - progenitor|untreated",
+                         "CNTF_diff_3w - progenitor|untreated",
+                         "treated - untreated|BMP4_diff_3w",
+                         "treated - untreated|CNTF_diff_3w")]
+
+
+select_gene <- function(df) {
+  upreg <- df %>% dplyr::filter(pvalue < 0.05) %>% dplyr::filter(log2FoldChange > 0.5) %>% pull(id)
+  downreg <- df %>% dplyr::filter(pvalue < 0.05) %>% dplyr::filter(log2FoldChange < -0.5) %>% pull(id)
+  outdf <- rbind(data.frame(Direction = "Up", id = upreg),
+                 data.frame(Direction = "Down", id = downreg))
+}
+select_gene_outs <- lapply(dgeBulk_sel, select_gene)
+
+##### Differentiated vs Progenitor ##### 
+# Upregulated
+# List of items
+first_up <- select_gene_outs[[1]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+second_up <- select_gene_outs[[2]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+name1 = paste0("BMP4 v progenitor \n (",first_up,")")
+name2 = paste0("CNTF v progenitor \n (",second_up,")")
+x <- list( list1 = select_gene_outs[[1]] %>% dplyr::filter(Direction == "Up") %>% pull(id), 
+          list2 = select_gene_outs[[2]] %>% dplyr::filter(Direction == "Up") %>% pull(id))
+names(x) <- c(name1, name2)
+# Plot Venn diagram
+p1 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p1, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_upregulated_scaled.svg"), width=12.5, height=12.5)
+p2 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p2, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_upregulated.svg"), width=10, height=12)
+
+# Downregulated
+# List of items
+first_down <- select_gene_outs[[1]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+second_down <- select_gene_outs[[2]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+name1 = paste0("BMP4 v progenitor \n (",first_down,")")
+name2 = paste0("CNTF v progenitor \n (",second_down,")")
+x <- list( list1 = select_gene_outs[[1]] %>% dplyr::filter(Direction == "Down") %>% pull(id), 
+          list2 = select_gene_outs[[2]] %>% dplyr::filter(Direction == "Down") %>% pull(id))
+names(x) <- c(name1, name2)
+
+# Plot Venn diagram
+p3 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p3, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_downregulated_scaled.svg"),  width=12.5, height=12.5)
+p4 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p4, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_downregulated.svg"), width=10, height=12)
+
+##### End of Differentiated vs Progenitor ##### 
+
+
+ 
+##### Treated vs Untreated ##### 
+# Upregulated
+# List of items
+first_up <- select_gene_outs[[3]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+second_up <- select_gene_outs[[4]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+name1 = paste0("treated v untreated BMP4 \n (",first_up,")")
+name2 = paste0("treated v untreated CNTF \n (",second_up,")")
+x <- list( list1 = select_gene_outs[[3]] %>% dplyr::filter(Direction == "Up") %>% pull(id), 
+            list2 = select_gene_outs[[4]] %>% dplyr::filter(Direction == "Up") %>% pull(id))
+names(x) <- c(name1, name2)
+# Plot Venn diagram
+p5 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p5, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_upregulated_scaled.svg"), width=12.5, height=12.5)
+p6 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p6, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_upregulated.svg"), width=10, height=12)
+
+ 
+# Downregulated
+# List of items
+first_down <- select_gene_outs[[3]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+second_down <- select_gene_outs[[4]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+name1 = paste0("treated v untreated BMP4 \n (",first_down,")")
+name2 = paste0("treated v untreated CNTF \n (",second_down,")")
+x <- list( list1 = select_gene_outs[[3]] %>% dplyr::filter(Direction == "Down") %>% pull(id), 
+            list2 = select_gene_outs[[4]] %>% dplyr::filter(Direction == "Down") %>% pull(id))
+names(x) <- c(name1, name2)
+# Plot Venn diagram
+p7 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p7, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_downregulated_scaled.svg"), width=12.5, height=12.5)
+p8 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p8, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_downregulated.svg"), width=10, height=12)
+
+##### End of Treated vs Untreated ##### 
+ 
+scplotl <- list(p1,p3,p5,p7) 
+nscplotl <- list(p2,p4,p6,p8) 
+
+```
+
+## scaled {.tabset} 
+```{r, message=FALSE, warning=TRUE, fig.height=20, fig.width=20, echo=FALSE, results='asis',fig.keep='all'}
+
+plotl = scplotl
+names=list("Upregulated Differentiated vs Progenitor", "Downregulated Differentiated vs Progenitor",
+        "Upregulated Treated vs Untreated", "Downregulated Treated vs Untreated")
+
+for (i in 1:length(names)) {
+
+    name = names[[i]]
+    cat('\n')
+    cat('### ', name, '   \n')
+    cat('\n')
+
+    print(plotl[[i]])
+
+    cat('\n')
+
+}
+
+```
+
+## non-scaled {.tabset} 
+```{r, message=FALSE, warning=TRUE, fig.height=20, fig.width=20, echo=FALSE, results='asis',fig.keep='all'}
+
+plotl = nscplotl
+names=list("Upregulated Differentiated vs Progenitor", "Downregulated Differentiated vs Progenitor",
+        "Upregulated Treated vs Untreated", "Downregulated Treated vs Untreated")
+
+for (i in 1:length(names)) {
+
+    name = names[[i]]
+    cat('\n')
+    cat('### ', name, '   \n')
+    cat('\n')
+
+    print(plotl[[i]])
+
+    cat('\n')
+
+}
+
+```
+
+# Venn Diagrams: |logFC|>1  
+file: differential_analysis_BMP4_CNTF 
+```{r}
+# load de outputs
+res.file<-paste0(workdir, "/analysed_data/differential_analysis_BMP4_CNTF.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+
+# replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+    setNames(nm = dge_res_sheets$sheets)
+dgeBulk_sel <- dgeBulk[c("BMP4_diff_3w - progenitor|untreated",
+                         "CNTF_diff_3w - progenitor|untreated",
+                         "treated - untreated|BMP4_diff_3w",
+                         "treated - untreated|CNTF_diff_3w")]
+
+
+select_gene <- function(df) {
+  upreg <- df %>% dplyr::filter(pvalue < 0.05) %>% dplyr::filter(log2FoldChange > 1) %>% pull(id)
+  downreg <- df %>% dplyr::filter(pvalue < 0.05) %>% dplyr::filter(log2FoldChange < -1) %>% pull(id)
+  outdf <- rbind(data.frame(Direction = "Up", id = upreg),
+                 data.frame(Direction = "Down", id = downreg))
+}
+select_gene_outs <- lapply(dgeBulk_sel, select_gene)
+
+##### Differentiated vs Progenitor ##### 
+# Upregulated
+# List of items
+first_up <- select_gene_outs[[1]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+second_up <- select_gene_outs[[2]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+name1 = paste0("BMP4 v progenitor \n (",first_up,")")
+name2 = paste0("CNTF v progenitor \n (",second_up,")")
+x <- list( list1 = select_gene_outs[[1]] %>% dplyr::filter(Direction == "Up") %>% pull(id), 
+          list2 = select_gene_outs[[2]] %>% dplyr::filter(Direction == "Up") %>% pull(id))
+names(x) <- c(name1, name2)
+# Plot Venn diagram
+p1 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p1, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_upregulated_scaled.svg"), width=12.5, height=12.5)
+p2 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p2, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_upregulated.svg"), width=10, height=12)
+
+# Downregulated
+# List of items
+first_down <- select_gene_outs[[1]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+second_down <- select_gene_outs[[2]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+name1 = paste0("BMP4 v progenitor \n (",first_down,")")
+name2 = paste0("CNTF v progenitor \n (",second_down,")")
+x <- list( list1 = select_gene_outs[[1]] %>% dplyr::filter(Direction == "Down") %>% pull(id), 
+          list2 = select_gene_outs[[2]] %>% dplyr::filter(Direction == "Down") %>% pull(id))
+names(x) <- c(name1, name2)
+
+# Plot Venn diagram
+p3 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p3, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_downregulated_scaled.svg"),  width=12.5, height=12.5)
+p4 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p4, file=paste0(workdir,"/venn_diagram/venn_bmp4_cntf_v_progenitor_downregulated.svg"), width=10, height=12)
+
+##### End of Differentiated vs Progenitor ##### 
+
+
+ 
+##### Treated vs Untreated ##### 
+# Upregulated
+# List of items
+first_up <- select_gene_outs[[3]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+second_up <- select_gene_outs[[4]] %>% dplyr::filter(Direction == "Up") %>% nrow()
+name1 = paste0("treated v untreated BMP4 \n (",first_up,")")
+name2 = paste0("treated v untreated CNTF \n (",second_up,")")
+x <- list( list1 = select_gene_outs[[3]] %>% dplyr::filter(Direction == "Up") %>% pull(id), 
+            list2 = select_gene_outs[[4]] %>% dplyr::filter(Direction == "Up") %>% pull(id))
+names(x) <- c(name1, name2)
+# Plot Venn diagram
+p5 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p5, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_upregulated_scaled.svg"), width=12.5, height=12.5)
+p6 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p6, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_upregulated.svg"), width=10, height=12)
+
+ 
+# Downregulated
+# List of items
+first_down <- select_gene_outs[[3]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+second_down <- select_gene_outs[[4]] %>% dplyr::filter(Direction == "Down") %>% nrow()
+name1 = paste0("treated v untreated BMP4 \n (",first_down,")")
+name2 = paste0("treated v untreated CNTF \n (",second_down,")")
+x <- list( list1 = select_gene_outs[[3]] %>% dplyr::filter(Direction == "Down") %>% pull(id), 
+            list2 = select_gene_outs[[4]] %>% dplyr::filter(Direction == "Down") %>% pull(id))
+names(x) <- c(name1, name2)
+# Plot Venn diagram
+p7 <- ggvenn(x, auto_scale = TRUE, text_size = 5, stroke_size = 0.5, set_name_size = 5)
+ ggsave(plot=p7, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_downregulated_scaled.svg"), width=12.5, height=12.5)
+p8 <- ggvenn(x, auto_scale = FALSE, text_size = 5)
+ ggsave(plot=p8, file=paste0(workdir,"/venn_diagram/venn_treated_v_untreated_downregulated.svg"), width=10, height=12)
+
+##### End of Treated vs Untreated ##### 
+ 
+scplotl <- list(p1,p3,p5,p7) 
+nscplotl <- list(p2,p4,p6,p8) 
+
+```
+
+## scaled {.tabset} 
+```{r, message=FALSE, warning=TRUE, fig.height=20, fig.width=20, echo=FALSE, results='asis',fig.keep='all'}
+
+plotl = scplotl
+names=list("Upregulated Differentiated vs Progenitor", "Downregulated Differentiated vs Progenitor",
+        "Upregulated Treated vs Untreated", "Downregulated Treated vs Untreated")
+
+for (i in 1:length(names)) {
+
+    name = names[[i]]
+    cat('\n')
+    cat('### ', name, '   \n')
+    cat('\n')
+
+    print(plotl[[i]])
+
+    cat('\n')
+
+}
+
+```
+
+## non-scaled {.tabset} 
+```{r, message=FALSE, warning=TRUE, fig.height=20, fig.width=20, echo=FALSE, results='asis',fig.keep='all'}
+
+plotl = nscplotl
+names=list("Upregulated Differentiated vs Progenitor", "Downregulated Differentiated vs Progenitor",
+        "Upregulated Treated vs Untreated", "Downregulated Treated vs Untreated")
+
+for (i in 1:length(names)) {
+
+    name = names[[i]]
+    cat('\n')
+    cat('### ', name, '   \n')
+    cat('\n')
+
+    print(plotl[[i]])
+
+    cat('\n')
+
+}
+
+```
 
 # GO Term Enrichment
+file: differential_analysis_BMP4_CNTF
+```{r}
+# load analysis output
+res.file <- list.files(path=paste0(workdir, "/analysed_data/"), pattern="GSEA")
+res.df <- data.frame()
+for (i in res.file) {
+  comparison <- substr(i, 6, nchar(i)-4)
+  enr_res <- read.csv(paste0(workdir, "/analysed_data/", i))
+  enr_res <- enr_res[,c("gs_subcat","ID","Description","enrichmentScore","NES","p.adjust","core_enrichment","core_enrichment_shrunkLFC")]
+  res.df <- rbind(res.df, data.frame(Comparison = comparison, 
+                                     enr_res))
+}
+
+# review loaded data
+length(table(res.df$Comparison)) # 7 comparisons
+data.frame(table(res.df$Comparison)) # Number of GO terms by comparison
+table(res.df$gs_subcat) # 1 database
+
+# # edit descriptions
+# res.df$Description <- substr(res.df$Description,6, nchar(res.df$Description))
+res.df$Description <- gsub("_", " ", res.df$Description)
+
+## make description word lowercase
+# first_l <- substr(res.df$Description,1, 1)
+# second_l <- tolower(substr(res.df$Description, 2, nchar(res.df$Description)))
+# all_l <- paste0(first_l, second_l)
+# res.df$Description <- all_l
+
+# annotate positive and negative NES
+res.df$nes_sym <- ifelse( res.df$NES < 0, "neg", "pos")
+
+```
+
+
+```{r, fig.height=16, fig.width=16}
+# plot figures
+dirs = unique(res.df$nes_sym)
+comps = unique(res.df$Comparison) %>% 
+  grep("treated - untreated_in_CNTF_diff_3w - BMP4_diff_3w", ., invert=TRUE, value=TRUE) # filter out unused comparison
+
+# plotting function
+plotORA <- function(results) {
+  gnps <- brewer.pal(9, 'GnBu')
+  gnps <- gnps[c(5:9)]
+  results$Description <- as.character(results$Description) %>% str_wrap(., width=60)
+  gsea_plot <- ggplot(results, aes(x = NES, y = reorder(Description, abs(NES)), fill = -log10(p.adjust))) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradientn(colours=gnps) +
+  labs(title = paste0(comparison," ",direction_name),
+       x = "NES",
+       y = "GO:BP Gene set",
+       color = "-log10(p-value)") +
+  theme_bw(base_size = 18) +
+  theme(plot.title = element_text(hjust = 0.5) # Center the plot title
+        ) + 
+  scale_y_discrete(labels=function(x) str_wrap(x, width=60)) 
+  return(gsea_plot)
+}
+
+# loop function over all groups
+plotList <- c()
+nameList <- c()
+for (comparison in comps) {
+  for (direction in dirs) {
+    direction_name = ifelse(direction=="neg","downregulated",ifelse(direction=="pos","upregulated","NA"))
+    # filter the top 50 GO terms
+    res_filter <- res.df %>%
+                  dplyr::filter(Comparison == comparison) %>%
+                  dplyr::filter(nes_sym == direction) %>%
+                  arrange(desc(abs(NES))) %>%
+                  slice_head(n = 50)
+    
+    plot <- plotORA(res_filter)
+    name <- paste0(comparison, "_", direction_name)
+    plotList <- c(plotList, list(plot))
+    nameList <- c(nameList, list(name))
+    # ggsave(file=paste0(workdir,"/gsea_plot/gsea_",comparison,"_",direction_name,"_top50_gobp.svg"), plot=gsea_plot, width=18, height=25)
+  }
+}
+names(plotList) <- nameList
+```
+
+```{r}
+# save table
+dirs = unique(res.df$nes_sym)
+comps = unique(res.df$Comparison)
+
+tableList <- c()
+nameList <- c()
+for (comparison in comps) {
+  for (direction in dirs) {
+    direction_name = ifelse(direction=="neg","downregulated",ifelse(direction=="pos","upregulated","NA"))
+    # filter the top 50 GO terms
+    res_filter <- res.df %>%
+                  dplyr::filter(Comparison == comparison) %>%
+                  dplyr::filter(nes_sym == direction) %>%
+                  arrange(desc(abs(NES))) %>%
+                  slice_head(n = 50)
+    res_slim = res_filter[c("ID","enrichmentScore","NES","p.adjust","core_enrichment","core_enrichment_shrunkLFC")]
+    # save extended file
+    savedir="/Users/k23139900/Documents/PhD/projects/astrocyte_differentiation/pu_analysis/GOtermtables"
+    write.csv(res_filter,paste0(savedir,"/",comparison,"_",direction_name,"_top50_gobp_extended.csv"))
+    
+    # save slim file
+    res_slim = res_filter[c("ID","NES","p.adjust")]
+    savedir="/Users/k23139900/Documents/PhD/projects/astrocyte_differentiation/pu_analysis/GOtermtables"
+    write.csv(res_slim,paste0(savedir,"/",comparison,"_",direction_name,"_top50_gobp.csv"))
+    
+    name <- paste0(comparison,"_",direction_name)
+    tableList <- c(tableList, list(res_slim))
+    nameList <- c(nameList, list(name))
+  }
+}
+
+names(tableList) <- nameList
+```
+
+## plots {.tabset} 
+```{r, message=FALSE, warning=TRUE, fig.height=20, fig.width=18, echo=FALSE, results='asis',fig.keep='all'}
+
+plotl = plotList
+names = names(plotList)
+
+for (i in 1:length(names)) {
+
+    name = names[[i]]
+    cat('\n')
+    cat('### ', name, '   \n')
+    cat('\n')
+
+    print(plotl[[i]])
+
+    cat('\n')
+
+}
+
+```
+
+# Session Info
+```{r}
+sessionInfo()
+```
