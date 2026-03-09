@@ -1,0 +1,154 @@
+---
+title: "Differentiation stability analysis"
+author: "Paulina Urbanaviciute"
+date: "2026-03-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(stringr)
+library(ggpubr)
+library(DESeq2)
+library(pheatmap)
+library(RColorBrewer)
+library(limma)
+
+```
+
+# Load expression data
+
+```{r}
+
+# path to raw counts files:
+rev_path = "/Volumes/pu1918/home/AS_astrocytes/RNA_revision/results/all_counts.txt"
+all_counts = read.table(rev_path, sep="\t", header=TRUE)
+
+# restrict to counts
+all_counts = all_counts[c(38:nrow(all_counts)),]
+PCA_names = colnames(all_counts) %>% grep("PCA",.,value=TRUE)
+keep_names = setdiff(colnames(all_counts), PCA_names)
+all_counts = all_counts[,c(keep_names)]
+rownames(all_counts) <- all_counts$X
+all_counts = all_counts[,c(4:ncol(all_counts))]
+
+# format
+all_counts <- as.matrix(all_counts)
+mode(all_counts) <- "numeric" 
+
+# build metadata 
+sample_info = data.frame(sample = colnames(all_counts))
+sample_info$cell_line <- str_extract(sample_info$sample, "ctrl2|ctrl3") %>% splus2R::lowerCase()
+sample_info$group <- str_extract(sample_info$sample, "BtoN|CtoN|N|C|B")
+
+# simplify group label
+sample_info$group_simple <- sample_info$group
+sample_info$group_simple[sample_info$group_simple %in% c("N")] <- "N"
+sample_info$group_simple[sample_info$group_simple %in% c("BMP4","B")] <- "BMP4"
+sample_info$group_simple[sample_info$group_simple %in% c("CNTF","C")] <- "CNTF"
+
+
+# make a dds object for vst normalization
+dds <- DESeqDataSetFromMatrix(
+  countData = all_counts,
+  colData   = sample_info,
+  design = ~ 1
+)
+
+# keep relevant samples
+keep_cols = grep("_N",colnames(dds), value=TRUE, invert=TRUE)
+dds = dds[,keep_cols]
+# Estimate size factors (library size normalisation)
+dds <- estimateSizeFactors(dds)
+# Variance stabilising transform
+vsd <- vst(dds, blind = TRUE)
+# Extract a numeric matrix for PCA / correlation
+mat <- assay(vsd)
+
+```
+
+
+# Sample correlation
+
+```{R, fig.height=6, fig.width=6}
+
+cor_mat <- cor(mat, method = "pearson")
+sample_info = colData(dds)
+rownames(sample_info) <- sample_info$sample
+annotation_col <- sample_info[, c("group", "cell_line")]  # or whichever columns
+rownames(annotation_col) <- rownames(sample_info)     # should match colnames(cor_mat)
+
+annotation_df <- as.data.frame(annotation_col)
+
+pheatmap(
+  cor_mat,
+  annotation_col = annotation_df,
+  clustering_method = "complete",
+  color = colorRampPalette((brewer.pal(n = 7, name = "YlGnBu")))(100),
+  border_color = NA
+)
+```
+```{r}
+# regress out the effects of the cell_line
+
+annotation_df <- as.data.frame(annotation_col)  # if still DFrame
+annotation_df$cell_line <- factor(annotation_df$cell_line)
+
+# Make sure samples match and are ordered
+expr_mat <- mat[, rownames(annotation_df)]
+stopifnot(all(colnames(expr_mat) == rownames(annotation_df)))
+
+# Design matrix with intercept + cell_line
+design <- model.matrix(~ cell_line, data = annotation_df)
+
+expr_corrected <- removeBatchEffect(
+  expr_mat,
+  batch = annotation_df$cell_line
+)
+
+# Now compute correlations on corrected expression
+cor_mat_resid <- cor(expr_corrected, method = "pearson")
+
+# Heatmap with your annotations
+pheatmap(
+  cor_mat_resid,
+  annotation_col = annotation_df,
+  clustering_method = "complete",
+  color = colorRampPalette((brewer.pal(n = 7, name = "YlGnBu")))(100),
+  border_color = NA
+)
+
+```
+
+# Principal Component Analysis (PCA)
+
+```{r}
+# PCA with prcomp 
+pca <- prcomp(t(mat), scale. = FALSE)  # t() because prcomp expects variables in columns
+
+# Proportion of variance explained
+pca_var <- pca$sdev^2
+pca_var_explained <- pca_var / sum(pca_var)
+
+pc1_var <- round(pca_var_explained[1] * 100, 1)
+pc2_var <- round(pca_var_explained[2] * 100, 1)
+
+# Bring into a data frame with metadata
+pca_df <- as.data.frame(pca$x)
+pca_df$sample <- rownames(pca_df)
+pca_df <- merge(pca_df, sample_info, by = "sample", all.x = TRUE)
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = group_simple, shape = cell_line)) +
+  geom_point(size = 3, alpha = 0.8) +
+  theme_bw() +
+  coord_equal() +
+  labs(
+    x = paste0("PC1 (", pc1_var, "% variance)"),
+    y = paste0("PC2 (", pc2_var, "% variance)"),
+    color = "Group",
+    shape = "cell_line",
+    title = " "
+  )
+```

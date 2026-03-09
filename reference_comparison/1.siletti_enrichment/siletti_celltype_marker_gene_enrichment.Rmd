@@ -1,0 +1,381 @@
+---
+title: "Astrocyte cell type markers in Siletti et al"
+author: "Paulina Urbanaviciute"
+date: "2026-03-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# load R packages
+library(BPCells) # remotes::install_github("bnprks/BPCells/r")
+library(Azimuth) # remotes::install_github('satijalab/azimuth', ref = 'master')
+library(Seurat)
+library(biomaRt)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+
+# set working directory
+setwd("/home/pu1918/RDS/user/pu1918/home/AS_astrocytes/AstroShape_RNA")
+workdir="/home/pu1918/RDS/user/pu1918/ephemeral/AS_astrocytes"
+savedir="/home/pu1918/RDS/user/pu1918/home/AS_astrocytes"
+
+# set seed
+set.seed(123)
+```
+
+# Load sn RNA-seq data
+
+```{r}
+# Downloaded publically available dataset from Stiletti et al 2023 (terminal)
+
+# cd $EPHEMERAL/AS_astrocytes/ref_stiletti
+# wget https://datasets.cellxgene.cziscience.com/e50d1b65-4ad1-48b2-ab4e-f5d9cbbaf54e.rds # astrocytes (rds)
+# wget https://datasets.cellxgene.cziscience.com/6c82c031-cccb-48e3-a51f-3ca97a3bc2a3.rds # non neuronal (rds)
+
+# wget https://datasets.cellxgene.cziscience.com/a71efd3c-765c-466b-8eca-0b29024094d4.h5ad # neurons (h5ad)
+# wget https://datasets.cellxgene.cziscience.com/c1d05de1-d442-48b1-a32c-86f4f0dc5f82.h5ad # non-neuronal (h5ad)
+```
+
+
+```{r}
+# Convert h5ad to integrated rds
+file.dir <- paste0(workdir, "/ref_stiletti/")
+files.set <- c("c1d05de1-d442-48b1-a32c-86f4f0dc5f82.h5ad", # Non-neurons
+               "a71efd3c-765c-466b-8eca-0b29024094d4.h5ad") # Neurons
+
+
+# Loop through h5ad files and output BPCells matrices on-disk
+data.list <- c()
+metadata.list <- c()
+
+for (i in 1:length(files.set)) {
+  path <- paste0(file.dir, files.set[i])
+  data <- BPCells::open_matrix_anndata_hdf5(path, group = "X")
+   write_matrix_dir(
+     mat = data,
+     dir = paste0(gsub(".h5ad", "", path), "_BP")
+   )
+  # Load in BP matrices
+  mat <- open_matrix_dir(dir = paste0(gsub(".h5ad", "", path), "_BP"))
+  # Get metadata
+  metadata.list[[i]] <- LoadH5ADobs(path = path)
+  data.list[[i]] <- mat
+}
+# Name layers
+names(data.list) <- c("nonneuron", "neuron")
+
+# check metadata columns
+colnames(metadata.list[[i]])
+
+# Add metadata
+metadata.list <- lapply(metadata.list, function(x) {
+  x <- x[, c("CellID", "sex", "cell_type", "cluster_id", "disease", "sample_id", 
+             "subcluster_id", "total_UMIs", "total_genes")]
+  return(x)
+})
+metadata <- Reduce(rbind, metadata.list)
+
+# create seurat object for both datasets
+seuobj <- CreateSeuratObject(counts = data.list, meta.data = metadata)
+seuobj[["RNA"]] <- JoinLayers(seuobj[["RNA"]])
+
+# save object
+saveRDS(
+  object = seuobj,
+  file = paste0(workdir, "/ref_stiletti/ref_siletti_neuron_nonneuron_seurat.Rds")
+)
+
+```
+
+
+```{r}
+
+# get gene annotations
+
+# rename genes with gene symbols
+# Get current Ensembl → Symbol mapping (GRCh38)
+mart <- useEnsembl(
+  biomart = "genes",
+  dataset = "hsapiens_gene_ensembl"
+)
+genes <- rownames(seuobj)
+annot <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol"),
+  filters = "ensembl_gene_id",
+  values = genes,
+  mart = mart
+)
+
+# Keep 1:1 mapping: drop rows with empty symbols and duplicates
+annot <- annot %>%
+  filter(hgnc_symbol != "") %>%
+  distinct(ensembl_gene_id,.keep_all = TRUE)
+
+metafeature = data.frame(gene = annot$ensembl_gene_id,
+                         symbol = annot$hgnc_symbol)
+
+```
+
+# Plot gene expression
+
+```{r}
+# downsample randomly for faster plotting
+n_keep <- 20000     # number of cells you want to keep
+all_cells <- colnames(seuobj)
+
+if (n_keep > length(all_cells)) {
+  stop("n_keep is larger than the number of cells in the object.")
+}
+
+cells_keep <- sample(all_cells, n_keep)
+seuobj_down <- subset(seuobj, cells = cells_keep)
+seuobj_down <- NormalizeData(seuobj_down)
+
+
+# format cell type names
+seuobj_down <- SetIdent(seuobj_down, value = seuobj_down@meta.data$cell_type)
+
+new.ids <- c(
+  "ependymal cell"  = "ependymal",
+  "oligodendrocyte precursor cell" = "OPC",
+  "vascular associated smooth muscle cell" = "vascular SMC",
+  "Bergmann glial cell" = "Bergmann glia",
+  "choroid plexus epithelial cell"  = "choroid plexus epithelia",
+  "central nervous system macrophage"  = "CNS macrophage" 
+)
+
+Idents(seuobj_down) <- plyr::revalue(
+  x = as.character(Idents(seuobj_down)),
+  replace = new.ids
+)
+levels(seuobj_down) <- sort(levels(seuobj_down))
+
+```
+
+```{r, fig.height=3, fig.width=5}
+# plot AQP4 across cell types
+selectFeature = annot[annot$hgnc_symbol %in% c("AQP4"),"ensembl_gene_id"]
+VlnPlot(seuobj_down, feature=selectFeature, pt.size = 0) + 
+  ggtitle("AQP4") + 
+  theme(legend.position = "none") + 
+  xlab("Siletti et al. 2023 Cell Type")
+```
+
+```{r, fig.height=4, fig.width=6}
+# plot GFAP across cell types
+selectFeature = annot[annot$hgnc_symbol %in% c("GFAP"),"ensembl_gene_id"]
+VlnPlot(seuobj_down, feature=selectFeature, pt.size = 0) + 
+  ggtitle("GFAP") +
+  theme(legend.position = "none") + 
+  xlab("Siletti et al. 2023 Cell Type")
+```
+
+
+# Find marker genes
+
+```{r}
+
+# filter samples
+# seuobj.filter <- subset(seuobj, donor_id != "H18.30.001") # low cell count sample (~500 cells)
+
+# downsample randomly for faster plotting
+n_keep <- 100000     # number of cells you want to keep
+all_cells <- colnames(seuobj)
+
+if (n_keep > length(all_cells)) {
+  stop("n_keep is larger than the number of cells in the object.")
+}
+
+cells_keep <- sample(all_cells, n_keep)
+seuobj_down <- subset(seuobj, cells = cells_keep)
+seuobj_down <- NormalizeData(seuobj_down)
+
+
+# find marker genes
+seuobj.markers <- FindAllMarkers(seuobj_down,
+                               group.by = "cell_type",
+                               only.pos = TRUE,
+                               min.pct = 0.2,
+                               logfc.threshold = 0.25,
+                               test.use = "wilcox")
+
+# count markers
+nrow(seuobj.markers)
+length(unique(seuobj.markers$gene))
+seuobj.markers %>% group_by(cluster) %>% summarise(Nmarker=n())
+
+# count significant markers
+nrow(seuobj.markers[seuobj.markers$p_val_adj < 0.05,])
+length(unique(seuobj.markers[seuobj.markers$p_val_adj < 0.05,]$gene))
+seuobj.markers[seuobj.markers$p_val_adj < 0.05,] %>% group_by(cluster) %>% summarise(Nmarker=n())
+
+# ensembl annotation reference 
+marker_m <- merge(seuobj.markers, metafeature, by="gene", all.x=TRUE)
+# save output
+write.csv(marker_m, paste0(savedir,"/tables/siletti_celltype_singlecell_wilcox_minpct0.2_marker_genes.csv"))
+
+```
+
+```{r}
+marker_m = read.csv(paste0(savedir,"/tables/siletti_celltype_singlecell_wilcox_minpct0.2_marker_genes.csv"))
+marker_m <- marker_m[marker_m$p_val_adj <= 0.05,]
+
+marker_m %>% filter(cluster=="astrocyte") %>% arrange(p_val_adj,desc(avg_log2FC))
+```
+
+# Overlap with astrocyte differentiation genes 
+
+```{r}
+
+# filter by significance and sort by effect size, and subset to top N markers
+sN = 50
+marker_m <- marker_m %>%
+  dplyr::filter(p_val_adj < 0.05) %>%
+  group_by(cluster) %>% # {FindAllMarkers}
+  arrange(desc(abs(avg_log2FC))) %>% # abs() not needed since have selected only upregulated genes
+  # arrange(p_val_adj) %>% # does not really work when so many p-values are 0s
+  slice_head(n = sN) %>%
+  ungroup()
+# check
+marker_m %>% group_by(cluster) %>% summarize(N=n()) # {FindAllMarkers}
+nrow(marker_m)
+
+# load differentiated BMP4 and CNTF marker genes
+res.file <- paste0(workdir, "/analysed_data/differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+# Replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+  setNames(nm = dge_res_sheets$sheets)
+dgeBulk_sel <- dgeBulk[c("BMP4_diff_3w - progenitor|untreated",
+                         "CNTF_diff_3w - progenitor|untreated")]
+# find common genes 
+# bN = 500
+bN = 1000
+outs_l <- list()
+for (i in 1:length(dgeBulk_sel)) {
+  
+  bulkRNA = dgeBulk_sel[[i]]
+  bulkMark <- bulkRNA %>% 
+    dplyr::filter(!(sig=="NS")) %>% 
+    dplyr::filter(!(class=="Down*")) %>% # only upregulated marker genes
+    arrange(desc(abs(log2FoldChange))) %>% 
+    slice_head(n = bN) # tweak this to take different number of marker genes from bulk RNA dataset
+  outdf <- merge(bulkMark, marker_m, by="symbol")
+  outdf$Comparison <- names(dgeBulk_sel)[i]
+  outs_l <- c(outs_l, list(outdf))
+}
+names(outs_l)<-names(dgeBulk_sel)
+outs_df<-do.call("rbind",outs_l)
+outs_df
+
+write.csv(outs_df,paste0(savedir,"/tables/siletti_celltype_marker_differentiated_astrocyte_deg_overlap.csv"))
+```
+
+```{r}
+table(outs_df$cluster)
+outs_df %>% group_by(Comparison, cluster) %>% summarize(N=n())
+```
+
+```{r}
+# add number of used cluster marker genes 
+if (is.null( outs_df$top.prop)  ) 
+{outs_df$top.prop <- sN}
+
+# number of overlapping marker genes by astrocyte lineage
+ol_count <- data.frame(table(outs_df$Comparison))
+colnames(ol_count) <- c("Comparison","OLCount")
+
+# get number of overlapping genes by cluster
+cluster_ol_gene_count <- outs_df %>% 
+  group_by(Comparison,cluster) %>% 
+  summarise(N.overlap=n()) %>% 
+  as.data.frame()
+# add number of cluster marker genes tested for overlap (top.prop)
+cluster_ol_gene_count <- merge(cluster_ol_gene_count, unique(outs_df[,c("Comparison","top.prop","cluster")]), by = c("Comparison","cluster"))
+cluster_ol_gene_count$GeneRatio <- cluster_ol_gene_count$N.overlap / cluster_ol_gene_count$top.prop
+cluster_ol_gene_count
+
+
+# apply hypergeometric test for overlap
+backpop = 18372
+
+outdf = data.frame()
+for (i in 1:nrow(cluster_ol_gene_count)) {
+  test_row = cluster_ol_gene_count[i,]
+  clustermark = test_row$top.prop
+  overlap = test_row$N.overlap
+  
+  signature_l = c(bN,bN)
+  # signature_l = c(3290,3278)
+  signature = ifelse(test_row$Comparison == "BMP4_diff_3w - progenitor|untreated", signature_l[1], signature_l[2])
+  
+  pval = phyper(q=overlap-1, # number of overlapping genes - 1
+                m=clustermark,          # number of cluster marker genes
+                n=backpop-clustermark,  # number of genes tested - overlapping genes
+                k=signature,            # number of differentiated astrocyte DEGs
+                lower.tail=FALSE)       # compute P( X > overlap ), hence the '-1' above
+  out <- data.frame(test_row, pval=pval)
+  outdf <- rbind(outdf, out)
+}
+# apply multiple testing correction
+outdf$p.adjust <- p.adjust(outdf$pval, method = "fdr")
+
+
+# rename cell types
+outdf$cell_type <- outdf$cluster
+outdf[outdf$cell_type == c("oligodendrocyte"),]$cell_type <- "Oligodendrocyte"
+outdf[outdf$cell_type == c("astrocyte"),]$cell_type <- "Astrocyte"
+outdf[outdf$cell_type == c("Bergmann glial cell"),]$cell_type <- "Bergmann glia"
+outdf[outdf$cell_type == c("oligodendrocyte precursor cell"),]$cell_type <- "OPC"
+outdf[outdf$cell_type == c("ependymal cell"),]$cell_type <- "Ependymal"
+outdf[outdf$cell_type == c("choroid plexus epithelial cell"),]$cell_type <- "Choroid plexus epithelia"
+outdf[outdf$cell_type == c("fibroblast"),]$cell_type <- "Fibroblast"
+outdf[outdf$cell_type == c("pericyte"),]$cell_type <- "Pericyte"
+outdf[outdf$cell_type == c("vascular associated smooth muscle cell"),]$cell_type <- "Vascular SMC"
+outdf[outdf$cell_type == c("endothelial cell"),]$cell_type <- "Endothelia"
+outdf[outdf$cell_type == c("central nervous system macrophage"),]$cell_type <- "CNS Macrophage"
+outdf[outdf$cell_type == c("neuron"),]$cell_type <- "Neuron"
+outdf[outdf$cell_type == c("leukocyte"),]$cell_type <- "Leukocyte"
+outdf$cell_type <- as.factor(outdf$cell_type)
+# rename comparisons
+outdf[outdf$Comparison == c("BMP4_diff_3w - progenitor|untreated"),]$Comparison <- "3w BMP4\nastrocyte"
+outdf[outdf$Comparison == c("CNTF_diff_3w - progenitor|untreated"),]$Comparison <- "3w CNTF\nastrocyte"
+outdf
+
+write.csv(outdf,paste0(savedir,"/tables/heatmap_bmp4_cntf_siletti_celltype_marker_enrich.csv"))
+```
+
+```{r, fig.height=3, fig.width=7}
+
+outdf = read.csv(paste0(savedir,"/tables/heatmap_bmp4_cntf_siletti_celltype_marker_enrich.csv"))
+
+# Plot heatmap of ratios
+ggplot(outdf, aes(cell_type, Comparison, fill= GeneRatio)) + 
+  geom_tile() +
+  scale_fill_gradient(low="white", high="purple") +
+  # geom_text(aes(label = ifelse(p.adjust < 0.05, 
+  #                              paste0("p = ",formatC(p.adjust, format = "e", digits = 2)), 
+  #                              "")), size=2.5)
+  geom_text(aes(label = ifelse( p.adjust < 0.0005, "***",
+                                ifelse(p.adjust < 0.05, "**", 
+                               ifelse(p.adjust < 0.1, "*","")))), size=5) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.title = element_text(hjust=0.5)) +
+  xlab("Cell Type") +
+  ggtitle("Siletti et al. 2023 Cell Type Markers")
+
+# ggsave(file=paste0(savedir,"/plots/heatmap_bmp4_cntf_siletti_celltype_marker_enrich.svg"), width=16, height=5)
+# ggsave(file=paste0(savedir,"/plots/heatmap_bmp4_cntf_siletti_celltype_marker_enrich.png"), width=9, height=3)
+
+```
+
+
+

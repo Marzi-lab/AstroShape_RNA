@@ -1,0 +1,196 @@
+---
+title: "Visualising differential genes"
+author: "Paulina Urbanaviciute"
+date: "2026-03-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyverse)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+
+```
+
+# Helper functions
+```{r}
+
+# function to plot data
+plot_gene_box <- function(gene_symbol,
+                          exp_mat,
+                          meta_long,
+                          condition_col = "target",
+                          test = TRUE,
+                          test_method = "wilcox.test",  # or "t.test"
+                          p_adjust_method = "BH") {
+
+  # Check that the symbol column exists
+  if (!"symbol" %in% colnames(exp_mat)) {
+    stop("exp_mat must have a column named 'symbol' with gene symbols.")
+  }
+
+  # 1. Filter expression matrix for the requested gene
+  gene_row <- exp_mat %>%
+    as.data.frame() %>%
+    dplyr::filter(symbol == gene_symbol)
+
+  if (nrow(gene_row) == 0) {
+    stop(paste("Gene", gene_symbol, "not found in exp_mat$symbol."))
+  }
+
+  # 2. Convert gene row to long format (sample-expression pairs)
+  gene_long <- gene_row %>%
+    dplyr::select(-X, -entrez, -symbol) %>%
+    tidyr::pivot_longer(
+      cols = dplyr::everything(),
+      names_to = "sample",
+      values_to = "expression"
+    )
+
+  gene_long$expression <- as.numeric(gene_long$expression)
+
+  # 3. Join with metadata
+  plot_df <- gene_long %>%
+    dplyr::left_join(meta_long, by = "sample")
+
+  # 4. Check condition column
+  if (!condition_col %in% colnames(plot_df)) {
+    stop(paste("Condition column", condition_col, "not found in metadata_long."))
+  }
+
+  # ensure condition is a factor to control ordering if needed
+  plot_df[[condition_col]] <- factor(plot_df[[condition_col]])
+
+  # 5. Build base plot
+  p <- ggplot(plot_df, aes_string(x = condition_col, y = "expression",
+                                  group = condition_col, fill = condition_col)) +
+    geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+    geom_jitter(width = 0.2, alpha = 0.8, size = 2) +
+    labs(
+      title = gene_symbol,
+      x = condition_col,
+      y = "expression"
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.title = element_text(hjust = 0.5) 
+    )
+
+  if (test == TRUE ) {
+    # 6. Add pairwise comparisons (all combinations of groups)
+    p <- p +
+      stat_compare_means(
+        aes_string(group = condition_col),
+        method = test_method,
+        label = "p.signif",
+        hide.ns = TRUE,
+        comparisons = combn(levels(plot_df[[condition_col]]), 2, simplify = FALSE),
+        p.adjust.method = p_adjust_method
+      )
+    # +
+    #   # Global p-value (overall test)
+    #   stat_compare_means(label.y = max(plot_df$expression, na.rm = TRUE) * 1.05)
+  }
+  return(p)
+}
+
+```
+
+
+# Load counts data
+
+## wo2w untreated
+```{r}
+
+# load data 
+datadir="/Users/k23139900/Documents/PhD/projects/astrocyte_differentiation/latest"
+data <- read.table(paste0(datadir,"/BMP4_CNTF_wo2W_untreated_vst.txt"),sep="\t",header=T)
+
+# separate by data type
+metadata <- data[c(2:11),-c(2:21)] # first set of rows, excluding PC columns
+pc <- data[-c(1:30), c(4:21)] # PC loadings by gene for each sample, selecting PC columns, excluding metadata and by sample PCs
+exp <- data[-c(1:30),-c(4:21)]
+
+# format metadata to long form
+metadata_long <- metadata %>%
+  pivot_longer(
+    cols = -X, # First column 'X' is annotation type, the rest are samples
+    names_to = "sample",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = X,
+    values_from = value
+  )
+# Check what columns we now have
+colnames(metadata_long)
+
+```
+
+
+# Plot genes
+
+```{r, fig.height=4, fig.width=3}
+
+# Plot AQP4 expression across progenitor, BMP4, CNTF (from 'target' column)
+plot_gene_box(
+  gene_symbol = "AQP4",
+  exp_mat = exp,
+  meta_long = metadata_long,
+  condition_col = "target",
+  test = FALSE,
+  p_adjust_method = "BH"
+)
+
+```
+
+```{r, fig.height=4, fig.width=3}
+
+# Plot GFAP expression across progenitor, BMP4, CNTF (from 'target' column)
+plot_gene_box(
+  gene_symbol = "GFAP",
+  exp_mat = exp,
+  meta_long = metadata_long,
+  condition_col = "target",
+  test = FALSE,
+  p_adjust_method = "BH"
+)
+
+```
+
+
+```{r, fig.height=4, fig.width=3}
+
+# Plot SLC1A3 expression across progenitor, BMP4, CNTF (from 'target' column)
+plot_gene_box(
+  gene_symbol = "SLC1A3",
+  exp_mat = exp,
+  meta_long = metadata_long,
+  condition_col = "target",
+  test = FALSE,
+  test_method = "wilcox.test",  # or "t.test"
+  p_adjust_method = "BH"
+)
+
+```
+
+```{r, fig.height=5.5, fig.width=3}
+
+# Plot GJA1 expression across progenitor, BMP4, CNTF (from 'target' column)
+plot_gene_box(
+  gene_symbol = "GJA1",
+  exp_mat = exp,
+  meta_long = metadata_long,
+  condition_col = "target",
+  test = TRUE,
+  test_method = "wilcox.test",  # or "t.test"
+  p_adjust_method = "BH"
+)
+
+```

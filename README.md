@@ -1,5 +1,3 @@
-<img width="1360" alt="astroheader" src="https://github.com/PaulinaUrbana/AstroShape/assets/101405502/9b09f737-03af-4644-ab6d-bf35efa7752e">
-
 
 # AstroShape: BMP4 and CNTF differentiated astrocytes
 
@@ -15,8 +13,8 @@ Astrocytes were differentiated from human induced pluripotent stem cells (iPSCs)
 Here, we provide scripts to reproduce the figures based on the RNA-seq gene expression data in the manuscript **‘Generation of morphologically distinct astrocyte subtypes from human iPSCs reveals a link between glial shape, function and reactivity’** by K O’Toole & L Guetta, P Urbanaviciute, P Suklai, C Wright, T Fisher, S Liddelow, R Louisier, SJ Marzi, A Serio. bioRxiv: https://www.biorxiv.org/content/10.1101/2024.11.11.622998v2.full 
 
 ### Contents:
-* differential_analysis: gene expression counts, differential analysis and pathway analysis outputs.
-* reference_comparison: comparison of gene expression profiles with other publicly available datasets.
+* differential_analysis/: gene expression counts, differential analysis and pathway analysis outputs.
+* reference_comparison/: comparison of gene expression profiles with other publicly available datasets.
 
 ### Acknowledgements
-Astrocyte differentiation, functional validation and RNA-seq experiments were conducted by members of the[ Serio lab - The Neural Circuits Bioengineering & Disease Modelling Group](http://seriolab.com). RNA-seq data preprocessing and differential analysis performed by the Francis Crick Bioinformatics and Biostatistics core facility. Data visualization and comparative analysis by Paulina Urbanaviciute under the supervision of Sarah Marzi.
+Astrocyte differentiation, functional validation and RNA-seq experiments were conducted by members of the[ Serio lab - The Neural Circuits Bioengineering & Disease Modelling Group](http://seriolab.com). RNA-seq data preprocessing and differential analysis performed by the Francis Crick Bioinformatics and Biostatistics core facility and Paulina Urbanaviciute. Data visualization and comparative analysis by Paulina Urbanaviciute under the supervision of Sarah Marzi.

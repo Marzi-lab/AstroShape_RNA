@@ -1,0 +1,817 @@
+---
+title: "White and grey astrocyte comparison"
+author: "Paulina Urbanaviciute"
+date: "2024-06-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(DESeq2)
+library(ggpubr)
+library(circlize)
+
+workdir = "/home/pu1918/RDS/user/pu1918/ephemeral/AS_astrocytes"
+setwd(workdir)
+```
+
+## Load reference data
+
+```{r load reference seurat object }
+znd_dir="~/RDS/user/pu1918/ephemeral/AS_astrocytes/ref_williams"
+seu_obj <-  readRDS(paste0(znd_dir, "/seu_obj_subset_astros.rds"))
+
+# subset dataset to control samples
+# seu_obj@meta.data$diagnosis  %>% unique() # "CTR"  "SPMS" "PPMS" "RRMS"
+seu_obj = subset(seu_obj, diagnosis == "CTR")  # 9054 cells
+```
+
+```{r reduc plot, fig.width=5, fig.height=5.5}
+DimPlot(seu_obj, reduction = "umap", raster=FALSE, group.by = 'matter')
+DimPlot(seu_obj, reduction = "umap", raster=FALSE, group.by = 'type_fine')
+DimPlot(seu_obj, reduction = "umap", raster=FALSE, group.by = 'type_broad')
+DimPlot(seu_obj, reduction = "umap", raster=FALSE, group.by = 'cluster_zoom')
+```
+
+```{r cell count}
+matterCount = table(seu_obj$matter) %>% data.frame
+fineCount = table(seu_obj$type_fine) %>% data.frame
+broadCount = table(seu_obj$type_broad) %>% data.frame
+clusterCount = table(seu_obj$cluster_zoom) %>% data.frame
+
+matterCount
+fineCount
+broadCount
+clusterCount
+```
+
+```{r,  fig.width=2, fig.height=2.5}
+# barplot of cell counts
+ggplot(matterCount, aes(x=Var1,y=Freq, fill=Var1)) + geom_bar(stat="identity") +
+   scale_fill_viridis(discrete = TRUE, begin = 0.4, end = 0.9, option = "magma", alpha = 0.8) +
+  theme(legend.position = 'none', 
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggplot(fineCount, aes(x=Var1,y=Freq, fill=Var1)) + geom_bar(stat="identity") +
+   scale_fill_viridis(discrete = TRUE, begin = 0.4, end = 0.9, option = "magma", alpha = 0.8) +
+  theme(legend.position = 'none', 
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggplot(broadCount, aes(x=Var1,y=Freq, fill=Var1)) + geom_bar(stat="identity") +
+   scale_fill_viridis(discrete = TRUE, begin = 0.4, end = 0.9, option = "magma", alpha = 0.8) +
+  theme(legend.position = 'none', 
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggplot(clusterCount, aes(x=Var1,y=Freq, fill=Var1)) + geom_bar(stat="identity") +
+   scale_fill_viridis(discrete = TRUE, begin = 0.4, end = 0.9, option = "magma", alpha = 0.8) +
+  theme(legend.position = 'none', 
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+## Create astrocyte fine type pseudobulk
+
+```{r Create reference pseudobulk}
+# set pseudobulk level
+cell_annot = "matter" # type_fine OR matter 
+annot_name = "matter" #  type_fine OR matter 
+
+# pseudobulk the counts by sample and region
+pseudo_seu <- AggregateExpression(seu_obj, assays = "RNA", return.seurat = T, group.by = c("individual_id_anon", cell_annot)) # edit: switching sample_id_anon to individual_id_anon
+# format counts matrix
+ref_cts <- as.matrix(pseudo_seu[["RNA"]]$counts)
+
+
+# format sample metadata 
+# ref_coldata <- data.frame(pseudo_seu@meta.data)
+donor_metadata <- data.frame(seu_obj@meta.data)[c("individual_id_anon",
+                                                  "matter", # edit: type_fine OR matter
+                                                  "sex","age_at_death")] %>% unique
+donor_metadata$newSampleID = paste0( donor_metadata$individual_id_anon, "_", donor_metadata$matter) # edit: type_fine OR matter
+rownames(donor_metadata) <- donor_metadata$newSampleID
+## edit: ref_coldata and donor_metadata same nrow, so take donor_metadata
+ref_coldata = donor_metadata
+
+# edit "-" to "_"
+colnames(ref_cts) <- gsub("-", "_", colnames(ref_cts))
+rownames(ref_coldata) <- gsub("-", "_", rownames(ref_coldata))
+
+# check
+checkorder <- all(rownames(ref_coldata) == colnames(ref_cts))
+# reorder if not
+if (checkorder == FALSE) {
+  df <- ref_coldata[match(colnames(ref_cts), rownames(ref_coldata)), ]
+  checkorder <- all(rownames(df) == colnames(ref_cts))
+  if (checkorder == TRUE) {
+    ref_coldata <- df
+  }
+}
+checkorder <- all(rownames(ref_coldata) == colnames(ref_cts))
+checkorder
+
+# save counts matrix
+write.csv(ref_cts, paste0(znd_dir,"/williams_ctrl_",annot_name,"_pseudobulk_counts.csv"),row.names=TRUE)
+# save sample metadata
+write.csv(ref_coldata, paste0(znd_dir,"/williams_ctrl_",annot_name,"_pseudobulk_metadata.csv"),row.names=TRUE)
+```
+
+
+```{r load formatted pseudobulk}
+### Reference cell type counts ###
+cell_annot = "matter" # type_fine OR matter 
+annot_name = "matter" #  type_fine OR matter 
+
+ref_cts <- read.csv(paste0(znd_dir,"/williams_ctrl_",annot_name,"_pseudobulk_counts.csv"),row.names = 1)
+ref_coldata <- read.csv(paste0(znd_dir,"/williams_ctrl_",annot_name,"_pseudobulk_metadata.csv"),row.names = 1)
+### End of Reference cell type counts ###
+```
+
+
+
+# Load progenitor bulk RNA-seq data
+
+```{r Reference DE analysis pt1}
+### Progenitor counts ###
+# load un-normalized count data "as only the count values allow assessing the measurement precision correctly"
+# DESeq2 model internally corrects for library size, so transformed or normalized values such as counts scaled by library size should not be used as input
+workdir="~/RDS/user/pu1918/ephemeral/AS_astrocytes/"
+as_datadir=paste0(workdir,"raw_data")
+# extract and separate
+data <- read.table(paste0(as_datadir,"/BMP4_CNTF_wo2W_counts.txt"),sep="\t",header=T) # BMP4_CNTF_wo2W_counts.txt OR BMP4_CNTF_counts.txt
+metadata <- data[c(2:11),-c(2:33)] # first set of rows, excluding PC columns
+pc <- data[-c(1:42), c(4:33)] # PC loadings by gene for each sample, selecting PC columns, excluding metadata and by sample PCs
+exp <- data[-c(1:42),-c(4:33)]
+# format counts
+rownames(exp) <- exp[,1]
+cts <- as.matrix(exp[,-c(1:3)])
+class(cts) <- "numeric"
+# format sample data
+rownames(metadata) <- metadata[,1]
+coldata <- t(metadata)[-1,] %>% data.frame()
+coldata$cell_line <- as.factor(coldata$cell_line)
+coldata$target <- as.factor(coldata$target)
+coldata$differentiation <- as.factor(coldata$differentiation)
+coldata$time <- as.factor(coldata$time)
+coldata$treatment <- as.factor(coldata$treatment)
+coldata$cell_line_batch <- as.factor(coldata$cell_line_batch)
+coldata$target_treatment <- paste0(coldata$target, "_", coldata$treatment)
+
+# subset progenitor samples
+keep_samples = grep("_progenitor_",rownames(coldata),value=TRUE)
+cts <- cts[,keep_samples]
+coldata <- coldata[keep_samples,]
+
+# check samples are in same order in counts and coldata
+all(rownames(coldata) == colnames(cts))
+### End of Progenitor counts ###
+```
+
+
+# Reference-Progenitor Differential Analysis
+``` {r}
+### Merge counts matrix and coldata ###
+coldata$source <- "bulk"
+ref_coldata$source <- "pseudobulk"
+
+coldata$id <- rownames(coldata)
+ref_coldata$id <- rownames(ref_coldata)
+
+coldata$celltype <- "progenitor"
+ref_coldata$celltype <- ref_coldata$matter # type_fine OR matter 
+
+## edit: keep only ENSEMBL gene IDs in reference gene (row) names 
+refgeneIDs <- str_extract(rownames(ref_cts), pattern="-E.{1,30}") %>% gsub("-","",.)
+rownames(ref_cts) <- refgeneIDs
+
+common_genes <- intersect(rownames(ref_cts), rownames(cts)) # n.genes = 16844
+common_cols <- intersect(colnames(ref_coldata), colnames(coldata)) # ncols = 3
+
+merged_cts <- cbind(cts[common_genes, ], ref_cts[common_genes, ])
+merged_coldata <- rbind(coldata[,common_cols], ref_coldata[,common_cols])
+rownames(merged_coldata) <- merged_coldata$id
+
+rownames(merged_coldata) <- gsub(" ", ".", rownames(merged_coldata))
+# rownames(merged_coldata) <- gsub("-", ".", rownames(merged_coldata))
+rownames(merged_coldata) <- gsub("\\.", "_", rownames(merged_coldata))
+
+### End of Merged counts matrix and coldata ###
+
+
+### Create dds ###
+checkorder <- all(rownames(merged_coldata) == colnames(merged_cts))
+# reorder if not
+if (checkorder == FALSE) {
+  df <- merged_coldata[match(colnames(merged_cts), rownames(merged_coldata)), ]
+  checkorder <- all(rownames(df) == colnames(merged_cts))
+  if (checkorder == TRUE) {
+    merged_coldata <- df
+  }
+}
+# check order
+all(rownames(merged_coldata) == colnames(merged_cts))
+# create dds set to compare celltype
+dds <- DESeqDataSetFromMatrix(countData = merged_cts+1, # edit: added pseudocount (+1) to avoid 0s
+                              colData = merged_coldata,
+                              design = ~ celltype)
+dds # DESeqDataSet dim: type_fine = 16844 760 ; matter = 16844 88
+
+# add feature data to dds metadata columns
+featureData <- data.frame(gene=rownames(merged_cts))
+featureData <- merge(featureData, exp[c(1:3)], by.x="gene", by.y="X")
+# check matching row order
+checkorder <- all(rownames(dds) == featureData$gene)
+if (checkorder == FALSE) {
+  featureData <- featureData[match(rownames(dds), featureData$gene), ]
+}
+ all(rownames(dds) == featureData$gene)
+# add to dds object
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+mcols(dds)
+### End of Create dds ###
+
+
+### run DESeq analysis ###
+dds <- DESeq(dds)
+# save
+saveRDS(dds, file = paste0(workdir,"/ref_williams/williams_ctrl_",annot_name,"_de_analysis.RDS"))
+### End of run DESeq analysis ###
+```
+
+
+```{r load DE results}
+# set pseudobulk level
+cell_annot = "matter" # (1) type_fine OR (2) matter 
+annot_name = "matter" # (1) type_fine OR (2) matter 
+
+# read in DE analysis results
+dds <- readRDS(  paste0(workdir,"/ref_williams/williams_ctrl_",annot_name,"_de_analysis.RDS") )
+```
+
+```{r save top 200 table}
+# set cell types
+celltype_l <- colData(dds)$celltype %>% unique()
+celltype_l <- celltype_l[!str_detect(celltype_l,pattern="progenitor")]
+outdf <- data.frame()
+for (celltype in celltype_l) {
+  res <- results(dds, contrast=c("celltype",celltype,"progenitor"))
+  res_df <- data.frame(res)
+  res_df$id <- rownames(res_df)
+  res_df$celltype <- celltype
+  
+  genesym <- mcols(dds)[c(1:3)] %>% data.frame
+  res_df = merge(res_df, genesym, by.x="id", by.y="gene", all = TRUE)
+
+  # limit to top 200 significant DEGs
+  res_df %<>%
+    arrange(padj) %>% slice_head(n=200)
+
+  outdf <- rbind(outdf, res_df)
+}
+write.csv(outdf, paste0(workdir,"/ref_williams/williams_ctrl_",annot_name,"_progenitor_differential_analysis_top200.csv"), row.names=TRUE)
+```
+
+## count DEGs per subtype
+
+``` {r, fig.width=10, fig.height=2.5}
+# set cell types
+celltype_l <- colData(dds)$celltype %>% unique()
+celltype_l <- celltype_l[!str_detect(celltype_l,pattern="progenitor")]
+countdf <- data.frame()
+for (celltype in celltype_l) {
+  res <- results(dds, contrast=c("celltype",celltype,"progenitor"))
+  res_df <- data.frame(res)
+  res_df$id <- rownames(res_df)
+  res_df$celltype <- celltype
+
+  # label up and down regulated genes (relative to progenitors)
+  res_df$direction = "Down"
+  res_df$direction[res_df$log2FoldChange > 0] = "Up"
+  # count
+  downDE = res_df[res_df$direction == "Down",] %>% NROW
+  upDE = res_df[res_df$direction == "Up",] %>% NROW
+
+  # subset to significant
+  sigres_df = res_df[res_df$padj < 0.05,]
+  # count
+  downDEsig = sigres_df[sigres_df$direction == "Down",] %>% NROW
+  upDEsig = sigres_df[sigres_df$direction == "Up",] %>% NROW
+
+  df = data.frame(celltype=rep(celltype,4), group=c("downDE","upDE","downDEsig", "upDEsig") ,
+                  count=c(downDE,upDE,downDEsig, upDEsig))
+
+  countdf <- rbind(countdf, df)
+}
+write.csv(countdf, paste0(workdir,"/ref_williams/williams_ctrl_",annot_name,"_progenitor_differential_analysis_degcounts.csv"), row.names=TRUE)
+
+```
+
+```{r plot deg count, fig.width=6, fig.height=2.5}
+countdf$group <- factor(countdf$group, c("downDE","upDE","downDEsig", "upDEsig"))
+ggplot(countdf, aes(x=celltype,y=count,fill=group)) + 
+ geom_bar(position="dodge", stat="identity")
+
+ggsave(file=paste0(workdir,"/ref_williams/williams_ctrl_",annot_name,"_progenitor_differential_analysis_degcounts.svg"), width=10, height=6)
+ggsave(file=paste0(workdir,"/ref_williams/williams_ctrl_",annot_name,"_progenitor_differential_analysis_degcounts.png"), width=10, height=6)
+```
+
+## type_fine: gene counts per cell type (norm + transm)
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+outdf %>% group_by(celltype) %>% arrange(padj) %>% slice_head(n=5) %>% ungroup %>% select(c("id","symbol")) %>% unique()
+```
+
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000132688"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000111642"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000101444"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000113758"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000131467"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000110492"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000188157"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000188612"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000135486"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000059377"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene="ENSG00000142347"
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+
+
+## matter: gene counts per cell type (norm + transm)
+``` {r view top genes dds count,  fig.width=10, fig.height=2.5}
+top = outdf %>% group_by(celltype) %>% arrange(padj) %>% slice_head(n=5) %>% pull(id) %>% unique
+# "ENSG00000135486" "ENSG00000185737" "ENSG00000104205" "ENSG00000197776" "ENSG00000118473" "ENSG00000071564"
+outdf %>% group_by(celltype) %>% arrange(padj) %>% slice_head(n=5) %>% ungroup %>% select(c("id","symbol")) %>% unique()
+```
+
+``` {r view top genes dds count, fig.width=2.5, fig.height=2.5}
+# plot uses dds, taking ENSEMBL ID as input
+plotgene=top[1]
+plotCounts(dds, plotgene, intgroup="celltype")
+plotgene=top[2]
+plotCounts(dds, plotgene, intgroup="celltype")
+plotgene=top[3]
+plotCounts(dds, plotgene, intgroup="celltype")
+plotgene=top[4]
+plotCounts(dds, plotgene, intgroup="celltype")
+plotgene=top[5]
+plotCounts(dds, plotgene, intgroup="celltype")
+```
+
+
+
+## Load bulk RNA differential analysis outputs
+```{r}
+res.file <- paste0(workdir, "/analysed_data/differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+# Replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+    setNames(nm = dge_res_sheets$sheets)
+dgeBulk_sel <- dgeBulk[c("BMP4_diff_3w - progenitor|untreated",
+                         "CNTF_diff_3w - progenitor|untreated")]
+
+ref_bmp4=dgeBulk_sel$`BMP4_diff_3w - progenitor|untreated`
+ref_cntf=dgeBulk_sel$`CNTF_diff_3w - progenitor|untreated`
+```
+
+
+## Effect size correlation
+```{r generate correlation coefficients, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=10, fig.height=4.5}
+# set significance threshold
+threshold_l <- list(0.1, 0.05, 0.01, 0.005)
+# set cell types
+celltype_l <- colData(dds)$celltype %>% unique()
+celltype_l <- celltype_l[!str_detect(celltype_l,pattern="progenitor")]
+
+outdf <- data.frame()
+for (celltype in celltype_l) {
+  
+  res <- results(dds, contrast=c("celltype",celltype,"progenitor")) 
+  res_df <- data.frame(res)
+  res_df$id <- rownames(res_df)
+  
+    celldf <- data.frame()
+    for (threshold in threshold_l) {
+  
+    ## bmp4 comparison
+    bmp4_degs <- merge(ref_bmp4, res_df, by="id")
+    bmp4_degs_p_threshold <- bmp4_degs[bmp4_degs$pvalue.x < threshold,]
+    # count genes
+    bmp_ngene <- length(unique(bmp4_degs_p_threshold$id))
+    # derive log2FoldChanges correlation coefficient
+    bmp_coef <- cor(bmp4_degs_p_threshold$log2FoldChange.x, bmp4_degs_p_threshold$log2FoldChange.y, method = "pearson",  use = "complete.obs")
+  
+    ## cntf comparison
+    cntf_degs <- merge(ref_cntf, res_df, by="id")
+    cntf_degs_p_threshold <- cntf_degs[cntf_degs$pvalue.x < threshold,]
+    # count genes
+    cntf_ngene <- length(unique(cntf_degs_p_threshold$id))
+    # derive log2FoldChanges correlation coefficient
+    cntf_coef <- cor(cntf_degs_p_threshold$log2FoldChange.x, cntf_degs_p_threshold$log2FoldChange.y, method = "pearson", use = "complete.obs")
+    
+    df <- data.frame(celltype=celltype, pthreshold=threshold, n_bmpgene=bmp_ngene, n_cntfgene=cntf_ngene, bmp_coef=bmp_coef, cntf_coef=cntf_coef)
+    celldf <- rbind(celldf, df)
+    }
+outdf <- rbind(outdf, celldf)
+}
+
+# save
+write.csv(outdf, paste0(workdir,"/ref_williams/williams_ctrl_correlation_coefficients_",annot_name,"_wo2w.csv"))
+```
+
+```{r plot summary, fig.width=3.5, fig.height=1.5}
+# read
+annot_name="matter"
+outdf <- read.csv(paste0(workdir,"/ref_williams/williams_ctrl_correlation_coefficients_",annot_name,"_wo2w.csv"),row.names=1)
+
+# format data types
+outdf_l <- pivot_longer(outdf, cols=c("bmp_coef","cntf_coef"), names_to="Comparison", values_to="Coefficient")
+outdf_l$celltype <- as.factor(outdf_l$celltype)
+outdf_l$pthreshold <- as.factor(outdf_l$pthreshold)
+
+# plot
+p <- ggplot(outdf_l, aes(x=pthreshold, y=celltype, fill=Coefficient)) +
+  geom_tile() +
+  scale_fill_gradient(low="white", high="darkblue", na.value = "white") +
+  theme_bw() +
+  theme(axis.text.y = element_text(angle = 0, vjust = 1, hjust=1)) +
+  facet_wrap("Comparison") + 
+  ggtitle("Macnair celltype correlation coefficients")
+p
+# save plot
+ggsave(file=paste0(workdir,"/ref_williams/plots/heatmap_williams_ctrl_",annot_name,"_correlation.svg"), width=8, height=8)
+ggsave(file=paste0(workdir,"/ref_williams/plots/heatmap_williams_ctrl_",annot_name,"_correlation.png"), width=8, height=4)
+```
+
+```{r CNTF clustered correlations, fig.width=2.5, fig.height=2.5}
+
+# select astrocyte type
+type="CNTF" # BMP4 OR CNTF
+
+# Select column based on astrocyte type 
+# 5 = BMP4; 6 = CNTF
+if (type == "BMP4") {
+  Ncol = 5
+  Coef_col = "bmp_coef"
+} else {
+  Ncol = 6
+  Coef_col = "cntf_coef"
+}
+
+# Format data 
+outdf_w <- outdf[,c(1,2,Ncol)] %>%
+  pivot_wider(names_from = celltype, values_from = Coef_col) %>% as.matrix
+rownames(outdf_w) <- outdf_w[,1]
+outdf_w <- outdf_w[,-1]
+# select colours
+mycol <- colorRamp2(breaks = c(0.50, 0.70),  colors = c("white", "darkblue"))
+# create plot
+hm <- Heatmap(outdf_w, 
+        name = "Correlation",
+        column_title = "Cell Type", 
+        column_names_gp = grid::gpar(fontsize = 10),
+        row_title = "Significance levels",
+        row_names_gp = grid::gpar(fontsize = 10),
+        col = mycol) 
+draw(hm,
+   column_title=type,
+   column_title_gp=grid::gpar(fontsize=16))
+# save
+svg(paste0(workdir,"/ref_williams/heatmap_correlation_ctrl_",type,"_",annot_name,".svg"), width=4.5, height=4.5)
+   draw(hm,
+   column_title=type,
+   column_title_gp=grid::gpar(fontsize=16))
+dev.off()
+```
+
+```{r}
+# CNTF correlation summary
+cntf_outdf_w = outdf_w
+cntf_avg = outdf_w["0.05",] %>% mean()
+cntf_sd = outdf_w["0.05",] %>% sd()
+
+cntf_WM_avg = outdf_w["0.05",c("WM")] %>% mean()
+cntf_WM_sd = outdf_w["0.05",c("WM")] %>% sd()
+```
+
+```{r BMP4 clustered correlations, fig.width=2.5, fig.height=2.5}
+# select astrocyte type
+type="BMP4" # BMP4 OR CNTF
+
+# Select column based on astrocyte type 
+# 5 = BMP4; 6 = CNTF
+if (type == "BMP4") {
+  Ncol = 5
+  Coef_col = "bmp_coef"
+} else {
+  Ncol = 6
+  Coef_col = "cntf_coef"
+}
+
+# Format data 
+outdf_w <- outdf[,c(1,2,Ncol)] %>%
+  pivot_wider(names_from = celltype, values_from = Coef_col) %>% as.matrix
+rownames(outdf_w) <- outdf_w[,1]
+outdf_w <- outdf_w[,-1]
+# select colours
+mycol <- colorRamp2(breaks = c(0.50, 0.70),  colors = c("white", "darkblue"))
+# create plot
+hm <- Heatmap(outdf_w, 
+        name = "Correlation",
+        column_title = "Cell Type", 
+        column_names_gp = grid::gpar(fontsize = 10),
+        row_title = "Significance levels",
+        row_names_gp = grid::gpar(fontsize = 10),
+        col = mycol) 
+draw(hm,
+   column_title=type,
+   column_title_gp=grid::gpar(fontsize=16))
+ 
+# save
+svg(paste0(workdir,"/ref_williams/heatmap_correlation_ctrl_",type,"_",annot_name,".svg"), width=4.5, height=4.5)
+   draw(hm,
+   column_title=type,
+   column_title_gp=grid::gpar(fontsize=16))
+dev.off()
+```
+
+```{r}
+# BMP4 correlation summary
+bmp_outdf_w = outdf_w
+bmp_avg = outdf_w["0.05",] %>% mean()
+bmp_sd = outdf_w["0.05",] %>% sd()
+
+bmp_WM_avg = outdf_w["0.05",c("WM")] %>% mean()
+bmp_WM_sd = outdf_w["0.05",c("WM")] %>% sd()
+```
+
+
+```{r barplot for 4 subtype relative correlation, fig.width=2.5, fig.height=3.5}
+## only for type_fine:
+selCelltype = c("Astro_Ciliated","Astro_D","Astro_C","Astro_E")
+cntf_diff = cntf_outdf_w["0.05",selCelltype] - cntf_avg
+bmp_diff = bmp_outdf_w["0.05",selCelltype] - bmp_avg
+
+cntf_diff
+bmp_diff
+
+diff_df = data.frame(differentiation = c("CNTF","BMP4"),
+                     Rel.Average = c(mean(cntf_diff), mean(bmp_diff)),
+                     SD = c(sd(cntf_diff), sd(bmp_diff)) )
+
+ggplot(diff_df, aes(x=differentiation, y=Rel.Average)) +
+  geom_bar( stat="identity", fill="skyblue", alpha=0.8 ) + 
+  theme_classic(base_size = 18) +
+  geom_errorbar(aes(ymin = Rel.Average-SD, ymax = Rel.Average+SD), width=0.4) +
+  ylab("Relative Pearson's correlation (R)") +
+  xlab("Astrocyte differentiation")
+```
+
+```{r barplot for 4 statistical test, fig.width=6.5, fig.height=6.5}
+
+cntf_outdf_w = data.frame(cntf_outdf_w)
+cntf_outdf_w$Mean <- rowMeans(cntf_outdf_w)
+# cntf_outdf_w$RelWM = cntf_outdf_w$WM - cntf_outdf_w$Mean
+cntf_outdf_w$RelAstro_Ciliated <- cntf_outdf_w$Astro_Ciliated - cntf_outdf_w$Mean
+cntf_outdf_w$RelAstro_D <- cntf_outdf_w$Astro_D - cntf_outdf_w$Mean
+cntf_outdf_w$RelAstro_C <- cntf_outdf_w$Astro_C - cntf_outdf_w$Mean
+cntf_outdf_w$RelAstro_E <- cntf_outdf_w$Astro_E - cntf_outdf_w$Mean
+
+cntf_outdf_w$RelAstro_Mixed <- cntf_outdf_w$Astro_Mixed - cntf_outdf_w$Mean
+cntf_outdf_w$RelAstro_Oligo <- cntf_outdf_w$Astro_Oligo - cntf_outdf_w$Mean
+cntf_outdf_w$RelAstro_B <- cntf_outdf_w$Astro_B - cntf_outdf_w$Mean
+cntf_outdf_w$RelAstro_F <- cntf_outdf_w$Astro_F - cntf_outdf_w$Mean
+cntf_outdf_w$RelOligo_Astro <- cntf_outdf_w$Oligo_Astro - cntf_outdf_w$Mean
+cntf_outdf_w$RelMicro_Astro <- cntf_outdf_w$Micro_Astro - cntf_outdf_w$Mean
+
+
+bmp_outdf_w = data.frame(bmp_outdf_w)
+bmp_outdf_w$Mean <- rowMeans(bmp_outdf_w)
+# bmp_outdf_w$RelWM = bmp_outdf_w$WM - bmp_outdf_w$Mean
+bmp_outdf_w$RelAstro_Ciliated <- bmp_outdf_w$Astro_Ciliated - bmp_outdf_w$Mean
+bmp_outdf_w$RelAstro_D <- bmp_outdf_w$Astro_D - bmp_outdf_w$Mean
+bmp_outdf_w$RelAstro_C <- bmp_outdf_w$Astro_C - bmp_outdf_w$Mean
+bmp_outdf_w$RelAstro_E <- bmp_outdf_w$Astro_E - bmp_outdf_w$Mean
+
+bmp_outdf_w$RelAstro_Mixed <- bmp_outdf_w$Astro_Mixed - bmp_outdf_w$Mean
+bmp_outdf_w$RelAstro_Oligo <- bmp_outdf_w$Astro_Oligo - bmp_outdf_w$Mean
+bmp_outdf_w$RelAstro_B <- bmp_outdf_w$Astro_B - bmp_outdf_w$Mean
+bmp_outdf_w$RelAstro_F <- bmp_outdf_w$Astro_F - bmp_outdf_w$Mean
+bmp_outdf_w$RelOligo_Astro <- bmp_outdf_w$Oligo_Astro - bmp_outdf_w$Mean
+bmp_outdf_w$RelMicro_Astro <- bmp_outdf_w$Micro_Astro - bmp_outdf_w$Mean
+
+diff_df = data.frame(differentiation = c("CNTF","BMP4"),
+                     Rel.Average = c(mean(cntf_outdf_w$RelAstro_Ciliated), mean(bmp_outdf_w$RelAstro_Ciliated)),
+                     SD = c(sd(cntf_outdf_w$RelAstro_Ciliated), sd(bmp_outdf_w$RelAstro_Ciliated)) )
+p1 = ggplot(diff_df, aes(x=differentiation, y=Rel.Average)) +
+  geom_bar( stat="identity", fill="skyblue", alpha=0.8 ) + 
+  theme_classic(base_size = 18) +
+  geom_errorbar(aes(ymin = Rel.Average-SD, ymax = Rel.Average+SD), width=0.4) +
+  ylab("Mean-Adjusted Pearson's correlation (R)") +
+  xlab("Astrocyte differentiation") +
+  ggtitle("Astro_Ciliated")
+
+
+diff_df = data.frame(differentiation = c("CNTF","BMP4"),
+                     Rel.Average = c(mean(cntf_outdf_w$RelAstro_D), mean(bmp_outdf_w$RelAstro_D)),
+                     SD = c(sd(cntf_outdf_w$RelAstro_D), sd(bmp_outdf_w$RelAstro_D)) )
+p2 = ggplot(diff_df, aes(x=differentiation, y=Rel.Average)) +
+  geom_bar( stat="identity", fill="skyblue", alpha=0.8 ) + 
+  theme_classic(base_size = 18) +
+  geom_errorbar(aes(ymin = Rel.Average-SD, ymax = Rel.Average+SD), width=0.4) +
+  ylab("Mean-Adjusted Pearson's correlation (R)") +
+  xlab("Astrocyte differentiation") +
+  ggtitle("Astro_D")
+
+
+diff_df = data.frame(differentiation = c("CNTF","BMP4"),
+                     Rel.Average = c(mean(cntf_outdf_w$RelAstro_C), mean(bmp_outdf_w$RelAstro_C)),
+                     SD = c(sd(cntf_outdf_w$RelAstro_C), sd(bmp_outdf_w$RelAstro_C)) )
+p3 = ggplot(diff_df, aes(x=differentiation, y=Rel.Average)) +
+  geom_bar( stat="identity", fill="skyblue", alpha=0.8 ) + 
+  theme_classic(base_size = 18) +
+  geom_errorbar(aes(ymin = Rel.Average-SD, ymax = Rel.Average+SD), width=0.4) +
+  ylab("Mean-Adjusted Pearson's correlation (R)") +
+  xlab("Astrocyte differentiation") +
+  ggtitle("Astro_C")
+
+
+diff_df = data.frame(differentiation = c("CNTF","BMP4"),
+                     Rel.Average = c(mean(cntf_outdf_w$RelAstro_E), mean(bmp_outdf_w$RelAstro_E)),
+                     SD = c(sd(cntf_outdf_w$RelAstro_E), sd(bmp_outdf_w$RelAstro_E)) )
+p4 = ggplot(diff_df, aes(x=differentiation, y=Rel.Average)) +
+  geom_bar( stat="identity", fill="skyblue", alpha=0.8 ) + 
+  theme_classic(base_size = 18) +
+  geom_errorbar(aes(ymin = Rel.Average-SD, ymax = Rel.Average+SD), width=0.4) +
+  ylab("Mean-Adjusted Pearson's correlation (R)") +
+  xlab("Astrocyte differentiation") +
+  ggtitle("Astro_E")
+
+
+ggarrange(p1,p2,p3,p4, ncol=2, nrow=2)
+
+svg(paste0(workdir,"/ref_williams/barplot_ctrl_4S_relativecorrelation_",type,"_",annot_name,".svg"), width=8.5, height=8.5)
+ggarrange(p1,p2,p3,p4, ncol=2, nrow=2)
+dev.off()
+```
+
+```{r barplot for WM relative correlation, fig.width=2.5, fig.height=3.5}
+## only for matter:
+selCelltype = c("WM")
+cntf_diff = cntf_outdf_w["0.05",selCelltype] - cntf_avg
+bmp_diff = bmp_outdf_w["0.05",selCelltype] - bmp_avg
+
+cntf_diff
+bmp_diff
+
+diff_df = data.frame(differentiation = c("CNTF","BMP4"),
+                     Rel.Average = c(mean(cntf_diff), mean(bmp_diff)),
+                     SD = c(sd(cntf_diff), sd(bmp_diff)) )
+
+ggplot(diff_df, aes(x=differentiation, y=Rel.Average)) +
+  geom_bar( stat="identity", fill="skyblue", alpha=0.8 ) + 
+  theme_classic(base_size = 18) +
+  geom_errorbar(aes(ymin = Rel.Average-SD, ymax = Rel.Average+SD), width=0.4) +
+  ylab("Relative Pearson's correlation (R)") +
+  xlab("Astrocyte differentiation")
+```
+
+```{r barplot for WM statistical test, fig.width=2.5, fig.height=3.5}
+## only for matter:
+cntf_outdf_w = data.frame(cntf_outdf_w)
+cntf_outdf_w$Mean <- rowMeans(cntf_outdf_w)
+cntf_outdf_w$RelWM = cntf_outdf_w$WM - cntf_outdf_w$Mean
+cntf_outdf_w$RelGM = cntf_outdf_w$GM - cntf_outdf_w$Mean
+
+bmp_outdf_w = data.frame(bmp_outdf_w)
+bmp_outdf_w$Mean <- rowMeans(bmp_outdf_w)
+bmp_outdf_w$RelWM = bmp_outdf_w$WM - bmp_outdf_w$Mean
+bmp_outdf_w$RelGM = bmp_outdf_w$GM - bmp_outdf_w$Mean
+
+
+diff_df = data.frame(differentiation = c("CNTF","BMP4"),
+                     Rel.Average = c(mean(cntf_outdf_w$RelWM), mean(bmp_outdf_w$RelWM)),
+                     SD = c(sd(cntf_outdf_w$RelWM), sd(bmp_outdf_w$RelWM)) )
+
+p = ggplot(diff_df, aes(x=differentiation, y=Rel.Average)) +
+  geom_bar( stat="identity", fill="skyblue", alpha=0.8 ) + 
+  theme_classic(base_size = 18) +
+  geom_errorbar(aes(ymin = Rel.Average-SD, ymax = Rel.Average+SD), width=0.4) +
+  ylab("Relative Pearson's correlation (R)") +
+  xlab("Astrocyte differentiation") +
+  ggtitle("WM astrocyte")
+p
+
+svg(paste0(workdir,"/ref_williams/barplot_WM_relativecorrelation_",type,"_",annot_name,".svg"), width=4.5, height=4.5)
+p
+dev.off()
+
+
+diff_df = data.frame(differentiation = c("CNTF","BMP4"),
+                     Rel.Average = c(mean(cntf_outdf_w$RelGM), mean(bmp_outdf_w$RelGM)),
+                     SD = c(sd(cntf_outdf_w$RelGM), sd(bmp_outdf_w$RelGM)) )
+
+p = ggplot(diff_df, aes(x=differentiation, y=Rel.Average)) +
+  geom_bar( stat="identity", fill="skyblue", alpha=0.8 ) + 
+  theme_classic(base_size = 18) +
+  geom_errorbar(aes(ymin = Rel.Average-SD, ymax = Rel.Average+SD), width=0.4) +
+  ylab("Mean-Adjusted Pearson's correlation (R)") +
+  xlab("Astrocyte differentiation") +
+  ggtitle("GM astrocyte")
+p
+
+svg(paste0(workdir,"/ref_williams/barplot_GM_relativecorrelation_",type,"_",annot_name,".svg"), width=4.5, height=4.5)
+p
+dev.off()
+```
+
+
+```{r plot test gene count, fig.width=5.5, fig.height=3.5}
+# plot number of genes
+outdf_genel <-  pivot_longer(outdf[,-c(5,6)], cols=c("n_bmpgene","n_cntfgene"), names_to="Comparison", values_to="NGene")
+ggplot(outdf_genel, aes(x = pthreshold, y = NGene, color = Comparison, group = Comparison)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~celltype) +
+  labs(title = "Comparison of NGene by pthreshold",
+       x = "Pthreshold",
+       y = "NGene",
+       color = "Comparison")
+# save plot (many cell types:  width=10, height=10; 2 cell types:  width=5, height=3)
+ggsave(file=paste0(workdir,"/ref_williams/scatterplot_williams_ctrl_",annot_name,"_genecount_correlation.svg"), width=5, height=3)
+ggsave(file=paste0(workdir,"/ref_williams/scatterplot_williams_ctrl_",annot_name,"_genecount_correlation.png"), width=5, height=3)
+
+```
+
+```{r}
+# get gene count ranges
+outdf_genel$NGene[outdf_genel$pthreshold == "0.1"] %>% range
+outdf_genel$NGene[outdf_genel$pthreshold == "0.05"] %>% range
+outdf_genel$NGene[outdf_genel$pthreshold == "0.01"] %>% range
+outdf_genel$NGene[outdf_genel$pthreshold == "0.005"] %>% range
+
+# type_fine
+# [1] 8438 8626
+# [1] 7165 7414
+# [1] 5154 5350
+# [1] 4500 4698
+
+# matter
+# [1] 8438 8626
+# [1] 7165 7414
+# [1] 5154 5350
+# [1] 4500 4698
+```
+

@@ -1,0 +1,204 @@
+---
+title: "Tsartsalis et al Cell Type Markers"
+output: html_document
+date: "2026-03-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(stringr)
+
+# set working directory
+setwd("/home/pu1918/RDS/user/pu1918/home/AS_astrocytes/AstroShape_RNA")
+workdir="/home/pu1918/RDS/user/pu1918/ephemeral/AS_astrocytes"
+savedir="/home/pu1918/RDS/user/pu1918/home/AS_astrocytes"
+
+# set seed
+set.seed(123)
+```
+
+
+# Load cell type marker genes
+
+## Single cell reference
+```{r}
+
+# load single cell marker genes
+path=paste0(savedir,"/tables/tsartsalis/")
+file_l <- list.files(path, pattern="markers.txt")
+
+df <- data.frame()
+for (i in 1:length(file_l)) {
+  readin <- read.table(paste0(path, file_l[i]), header=TRUE, sep="\t")
+  celltype = str_split(file_l[i], "_")[[1]][2]
+  if (!"cluster" %in% colnames(readin)) {
+    readin$cluster <- celltype
+  }
+  df <- rbind(df, readin)
+}
+df
+# save
+write.table(df, paste0(savedir, "/tables/tsartsalis/tsartsalis_celltype_marker_genes.txt"),sep="\t")
+```
+
+## Astrocyte bulk RNA-seq  
+```{r}
+# load differentiated BMP4 and CNTF marker genes
+res.file <- paste0(workdir, "/analysed_data/differential_analysis_wo2W_BMP4_CNTF_wo2W.xlsx")
+dge_res_sheets <- readxl::excel_sheets(res.file)[-c(1:4)]
+dge_res_sheets <- data.frame(sheets = dge_res_sheets, row.names = dge_res_sheets)
+dge_res_sheets_key <- readxl::read_xlsx(res.file, sheet = "Comparison Key")
+# Replace long sheet name from the keys
+dge_res_sheets[dge_res_sheets_key$Key, ] <- dge_res_sheets_key$Comparison
+# select comparisons of interest 
+dgeBulk <- imap(rownames(dge_res_sheets), ~readxl::read_xlsx(res.file, sheet = .x)) %>%
+  setNames(nm = dge_res_sheets$sheets)
+dgeBulk_sel <- dgeBulk[c("BMP4_diff_3w - progenitor|untreated",
+                         "CNTF_diff_3w - progenitor|untreated")]
+```
+
+# Find overlaps
+
+```{r}
+# read
+stilSeu.markers <- read.table(paste0(savedir, "/tables/tsartsalis/tsartsalis_celltype_marker_genes.txt"), sep="\t", header=TRUE) 
+stilSeu.markers <- stilSeu.markers[stilSeu.markers$pct.1 <= 0.2 | stilSeu.markers$pct.2 <= 0.2, ]
+
+# filter by significance and sort by effect size, and subset to top N markers
+sN = 100
+stilSeu.markers <- stilSeu.markers %>%
+  dplyr::filter(p_val_adj < 0.05) %>%
+  group_by(cluster) %>% # {FindAllMarkers}
+  arrange(desc(abs(avg_logFC))) %>% # abs() not needed since have selected only upregulated genes
+  slice_head(n = sN) %>%
+  ungroup()
+# check
+stilSeu.markers %>% group_by(cluster) %>% summarize(N=n()) # {FindAllMarkers}
+nrow(stilSeu.markers)
+```
+
+```{r}
+# find common genes 
+bN = 1000
+# bN = 5000
+outs_l <- list()
+for (i in 1:length(dgeBulk_sel)) {
+  
+  bulkRNA = dgeBulk_sel[[i]]
+  bulkMark <- bulkRNA %>% 
+    dplyr::filter(!(sig=="NS")) %>% 
+    dplyr::filter(!(class=="Down*")) %>% # only upregulated marker genes
+    arrange(desc(abs(log2FoldChange))) %>% 
+    slice_head(n = bN) # tweak this to take different number of marker genes from bulk RNA dataset
+  outdf <- merge(bulkMark, stilSeu.markers, by.x="symbol", by.y="Gene.symbol")
+  outdf$Comparison <- names(dgeBulk_sel)[i]
+  outs_l <- c(outs_l, list(outdf))
+}
+names(outs_l)<-names(dgeBulk_sel)
+outs_df<-do.call("rbind",outs_l)
+outs_df
+```
+
+```{r}
+
+table(outs_df$cluster)
+outs_df %>% group_by(Comparison, cluster) %>% summarize(N=n())
+
+# add number of used cluster marker genes 
+if (is.null( outs_df$top.prop)  ) 
+{outs_df$top.prop <- sN}
+
+# save
+write.csv(outs_df, paste0(savedir, "/tables/tsartsalis/tsartsalis_cntf_bmp4_marker_deg_overlap.csv"))
+
+```
+
+```{r}
+
+# number of overlapping marker genes by astrocyte lineage
+ol_count <- data.frame(table(outs_df$Comparison))
+colnames(ol_count) <- c("Comparison","OLCount")
+
+# get number of overlapping genes by cluster
+cluster_ol_gene_count <- outs_df %>% 
+  group_by(Comparison,cluster) %>% 
+  summarise(N.overlap=n()) %>% 
+  as.data.frame()
+# add number of cluster marker genes tested for overlap (top.prop)
+cluster_ol_gene_count <- merge(cluster_ol_gene_count, unique(outs_df[,c("Comparison","top.prop","cluster")]), by = c("Comparison","cluster"))
+cluster_ol_gene_count$GeneRatio <- cluster_ol_gene_count$N.overlap / cluster_ol_gene_count$top.prop
+
+
+# apply hypergeometric test for overlap
+backpop = 18372
+
+outdf = data.frame()
+for (i in 1:nrow(cluster_ol_gene_count)) {
+  test_row = cluster_ol_gene_count[i,]
+  clustermark = test_row$top.prop
+  overlap = test_row$N.overlap
+  
+  signature_l = c(bN,bN)
+  # signature_l = c(3290,3278)
+  signature = ifelse(test_row$Comparison == "BMP4_diff_3w - progenitor|untreated", signature_l[1], signature_l[2])
+  
+  pval = phyper(q=overlap-1, # number of overlapping genes - 1
+                m=clustermark,          # number of cluster marker genes
+                n=backpop-clustermark,  # number of genes tested - overlapping genes
+                k=signature,            # number of differentiated astrocyte DEGs
+                lower.tail=FALSE)       # compute P( X > overlap ), hence the '-1' above
+  out <- data.frame(test_row, pval=pval)
+  outdf <- rbind(outdf, out)
+}
+# apply multiple testing correction
+outdf$p.adjust <- p.adjust(outdf$pval, method = "fdr")
+outdf
+
+# save
+write.csv(outdf, paste0(savedir, "/tables/tsartsalis/tsartsalis_cntf_bmp4_marker_deg_enrichment.csv"))
+
+```
+
+
+```{r, fig.height=3, fig.width=7}
+# rename cell types
+outdf$cell_type <- outdf$cluster
+outdf[outdf$cell_type == c("oligodendrocytes"),]$cell_type <- "Oligodendrocyte"
+outdf[outdf$cell_type == c("astrocyte"),]$cell_type <- "Astrocyte"
+outdf[outdf$cell_type == c("LYM1"),]$cell_type <- "Lymphocyte-1"
+outdf[outdf$cell_type == c("LYM2"),]$cell_type <- "Lymphocyte-2"
+outdf[outdf$cell_type == c("microglia"),]$cell_type <- "Microglia"
+outdf[outdf$cell_type == c("NEU1"),]$cell_type <- "Neuron-1"
+outdf[outdf$cell_type == c("NEU2"),]$cell_type <- "Neuron-2"
+outdf[outdf$cell_type == c("endothelial"),]$cell_type <- "Endothelial"
+outdf[outdf$cell_type == c("fibroblast"),]$cell_type <- "Fibroblast"
+outdf[outdf$cell_type == c("pericyte"),]$cell_type <- "Pericyte"
+
+# rename comparisons
+outdf[outdf$Comparison == c("BMP4_diff_3w - progenitor|untreated"),]$Comparison <- "3w BMP4\nastrocyte"
+outdf[outdf$Comparison == c("CNTF_diff_3w - progenitor|untreated"),]$Comparison <- "3w CNTF\nastrocyte"
+
+
+# Plot heatmap of ratios
+ggplot(outdf, aes(cell_type, Comparison, fill= GeneRatio)) + 
+  geom_tile() +
+  scale_fill_gradient(low="white", high="purple", na.value = "white") +
+  # geom_text(aes(label = ifelse(p.adjust < 0.05, 
+  #                              paste0("p = ",formatC(p.adjust, format = "e", digits = 2)), 
+  #                              "")), size=2.5)
+  geom_text(aes(label = ifelse( p.adjust < 0.0005, "***",
+                                ifelse(p.adjust < 0.05, "**", 
+                                       ifelse(p.adjust < 0.1, "*","")))), size=5) +
+  theme_bw() +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.title = element_text(hjust=0.5)) +
+  xlab("Cell Type") +
+  ggtitle("Tsartsalis et al. 2024 Cell Type Markers")
+  
+# ggsave(file=paste0(dir,"/ref_tsartsalis/plots/heatmap_bmp4_cntf_tsartsalis_celltype_marker_enrich.svg"), width=16, height=5)
+# ggsave(file=paste0(dir,"/ref_tsartsalis/plots/heatmap_bmp4_cntf_tsartsalis_celltype_marker_enrich.png"), width=9, height=3)
+
+
+```
+
